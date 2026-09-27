@@ -24,12 +24,16 @@ Commands:
   install       Install release binary to ${INSTALL_DIR}
   uninstall     Remove installed binary
   check         Run cargo check (fast syntax/type check)
+  test          Run cargo test (workspace; OPENSSL_* if no pkg-config)
   lint          Run clippy linter
   fmt           Format all source files
   clean         Remove build artefacts
   version       Show current workspace version
   bump <part>   Bump version: major | minor | patch
   help          Show this help
+
+Extra args after test are passed to cargo test, e.g.:
+  ./manage.sh test -p imt-tui --lib
 EOF
 }
 
@@ -38,6 +42,16 @@ need_cargo() {
         echo "error: cargo not found at $CARGO" >&2
         exit 1
     fi
+}
+
+# openssl-sys needs pkg-config or explicit paths (see TESTS.md / BUILD.md).
+ensure_openssl_env() {
+    if command -v pkg-config >/dev/null 2>&1; then
+        return 0
+    fi
+    export OPENSSL_DIR="${OPENSSL_DIR:-/usr}"
+    export OPENSSL_LIB_DIR="${OPENSSL_LIB_DIR:-/usr/lib/x86_64-linux-gnu}"
+    export OPENSSL_INCLUDE_DIR="${OPENSSL_INCLUDE_DIR:-/usr/include}"
 }
 
 cmd_build() {
@@ -90,12 +104,21 @@ cmd_uninstall() {
 
 cmd_check() {
     need_cargo
+    ensure_openssl_env
     echo "Checking..."
     "$CARGO" check
 }
 
+cmd_test() {
+    need_cargo
+    ensure_openssl_env
+    echo "Testing..."
+    "$CARGO" test --workspace "$@"
+}
+
 cmd_lint() {
     need_cargo
+    ensure_openssl_env
     echo "Running clippy..."
     "$CARGO" clippy -- -D warnings
 }
@@ -142,6 +165,7 @@ case "${1:-help}" in
     install)   cmd_install ;;
     uninstall) cmd_uninstall ;;
     check)     cmd_check ;;
+    test)      shift; cmd_test "$@" ;;
     lint)      cmd_lint ;;
     fmt)       cmd_fmt ;;
     clean)     cmd_clean ;;
