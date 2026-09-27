@@ -392,6 +392,8 @@ pub struct App {
     pub accounts: Vec<AccountView>,
     pub sidebar_account_idx: usize,
     pub sidebar_folder_idx: usize,
+    /// When true, the sidebar highlight is on the account header (not a folder).
+    pub sidebar_on_account: bool,
     pub messages: Vec<Message>,
     pub message_idx: usize,
     /// First visible message index in the list pane (Ratatui table offset).
@@ -726,6 +728,7 @@ impl App {
             accounts,
             sidebar_account_idx: 0,
             sidebar_folder_idx: initial_folder_idx,
+            sidebar_on_account: false,
             messages: Vec::new(),
             message_idx: 0,
             list_offset: 0,
@@ -1281,6 +1284,8 @@ impl App {
             }
             KeyAction::FocusNext => self.focus_next(),
             KeyAction::FocusPrev => self.focus_prev(),
+            KeyAction::PaneLeft => self.pane_left(),
+            KeyAction::PaneRight => self.pane_right(),
             KeyAction::Up => self.move_up(),
             KeyAction::Down => self.move_down(),
             KeyAction::PageUp => self.page(-10),
@@ -1549,14 +1554,14 @@ impl App {
             match self.sidebar_target_at(row) {
                 Some(SidebarTarget::Account(ai)) => {
                     self.sidebar_account_idx = ai;
-                    if let Some(av) = self.accounts.get_mut(ai) {
-                        av.expanded = !av.expanded;
-                    }
+                    self.sidebar_on_account = true;
+                    self.toggle_account_expanded();
                     self.focus = Focus::Sidebar;
                 }
                 Some(SidebarTarget::Folder(ai, fi)) => {
                     self.sidebar_account_idx = ai;
                     self.sidebar_folder_idx = fi;
+                    self.sidebar_on_account = false;
                     self.message_idx = 0;
                     self.list_offset = 0;
                     self.focus = Focus::MessageList;
@@ -2419,6 +2424,44 @@ impl App {
         };
     }
 
+    /// ← : collapse / parent account in sidebar, else previous pane.
+    fn pane_left(&mut self) {
+        match self.focus {
+            Focus::Sidebar => {
+                if !self.sidebar_on_account {
+                    self.sidebar_on_account = true;
+                    return;
+                }
+                if let Some(av) = self.accounts.get_mut(self.sidebar_account_idx) {
+                    if av.expanded {
+                        av.expanded = false;
+                    }
+                }
+            }
+            Focus::MessageList => self.focus = Focus::Sidebar,
+            Focus::Reader => self.focus = Focus::MessageList,
+        }
+    }
+
+    /// → : expand collapsed account in sidebar, else next pane.
+    fn pane_right(&mut self) {
+        match self.focus {
+            Focus::Sidebar => {
+                if self.sidebar_on_account {
+                    if let Some(av) = self.accounts.get_mut(self.sidebar_account_idx) {
+                        if !av.expanded {
+                            av.expanded = true;
+                            return;
+                        }
+                    }
+                }
+                self.focus = Focus::MessageList;
+            }
+            Focus::MessageList => self.focus = Focus::Reader,
+            Focus::Reader => {}
+        }
+    }
+
     fn move_up(&mut self) {
         if self.mode == Mode::Thread {
             if let Some(t) = self.thread_state.as_mut() {
@@ -2540,17 +2583,50 @@ impl App {
     }
 
     fn sidebar_up(&mut self) {
+        if self.sidebar_on_account {
+            if self.sidebar_account_idx == 0 {
+                return;
+            }
+            self.sidebar_account_idx -= 1;
+            let prev = &self.accounts[self.sidebar_account_idx];
+            if prev.expanded && !prev.folders.is_empty() {
+                self.sidebar_on_account = false;
+                self.sidebar_folder_idx = prev.folders.len() - 1;
+                self.refresh_messages();
+            }
+            // else stay on previous account header; leave message list alone
+            return;
+        }
         if self.sidebar_folder_idx > 0 {
             self.sidebar_folder_idx -= 1;
-        } else if self.sidebar_account_idx > 0 {
-            self.sidebar_account_idx -= 1;
-            let folders_len = self.accounts[self.sidebar_account_idx].folders.len();
-            self.sidebar_folder_idx = folders_len.saturating_sub(1);
+            self.refresh_messages();
+        } else {
+            self.sidebar_on_account = true;
         }
-        self.refresh_messages();
     }
 
     fn sidebar_down(&mut self) {
+        if self.sidebar_on_account {
+            let expanded = self
+                .accounts
+                .get(self.sidebar_account_idx)
+                .map(|a| a.expanded)
+                .unwrap_or(false);
+            let folders_len = self
+                .accounts
+                .get(self.sidebar_account_idx)
+                .map(|a| a.folders.len())
+                .unwrap_or(0);
+            if expanded && folders_len > 0 {
+                self.sidebar_on_account = false;
+                self.sidebar_folder_idx = 0;
+                self.refresh_messages();
+            } else if self.sidebar_account_idx + 1 < self.accounts.len() {
+                self.sidebar_account_idx += 1;
+                self.sidebar_on_account = true;
+            }
+            return;
+        }
         let folders_len = self
             .accounts
             .get(self.sidebar_account_idx)
@@ -2558,11 +2634,11 @@ impl App {
             .unwrap_or(0);
         if self.sidebar_folder_idx + 1 < folders_len {
             self.sidebar_folder_idx += 1;
+            self.refresh_messages();
         } else if self.sidebar_account_idx + 1 < self.accounts.len() {
             self.sidebar_account_idx += 1;
-            self.sidebar_folder_idx = 0;
+            self.sidebar_on_account = true;
         }
-        self.refresh_messages();
     }
 
     fn page(&mut self, delta: i32) {
@@ -2622,9 +2698,23 @@ impl App {
             self.mode = Mode::Normal;
             return;
         }
+        if self.focus == Focus::Sidebar {
+            if self.sidebar_on_account {
+                self.toggle_account_expanded();
+            } else {
+                self.focus = Focus::MessageList;
+            }
+            return;
+        }
         if self.current_message().is_some() {
             self.focus = Focus::Reader;
             self.refresh_body();
+        }
+    }
+
+    fn toggle_account_expanded(&mut self) {
+        if let Some(av) = self.accounts.get_mut(self.sidebar_account_idx) {
+            av.expanded = !av.expanded;
         }
     }
 
@@ -2945,5 +3035,173 @@ mod mouse_tests {
         assert_eq!(a.message_at_row(2), Some(1));
         assert_eq!(a.message_at_row(3), Some(2));
         assert_eq!(a.message_at_row(4), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod sidebar_nav_tests {
+    use super::*;
+    use crate::data::InMemoryDataSource;
+    use crate::keymap::{Focus, KeyAction};
+    use std::sync::Arc;
+
+    fn app() -> App {
+        App::new(Arc::new(InMemoryDataSource::sample()))
+    }
+
+    #[test]
+    fn enter_on_collapsed_account_expands_it() {
+        // Given: sidebar focus on a collapsed account header
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 1;
+        a.sidebar_on_account = true;
+        assert!(!a.accounts[1].expanded);
+
+        // When: Enter is pressed
+        a.dispatch(KeyAction::OpenMessage);
+
+        // Then: that account is expanded and its folders are visible
+        assert!(a.accounts[1].expanded);
+    }
+
+    #[test]
+    fn enter_on_expanded_account_collapses_it() {
+        // Given: sidebar focus on an expanded account header
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 0;
+        a.sidebar_on_account = true;
+        assert!(a.accounts[0].expanded);
+
+        // When: Enter is pressed
+        a.dispatch(KeyAction::OpenMessage);
+
+        // Then: that account is collapsed and its folders are hidden
+        assert!(!a.accounts[0].expanded);
+    }
+
+    #[test]
+    fn enter_on_folder_focuses_message_list() {
+        // Given: sidebar focus on a folder row
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 0;
+        a.sidebar_folder_idx = 0;
+        a.sidebar_on_account = false;
+
+        // When: Enter is pressed
+        a.dispatch(KeyAction::OpenMessage);
+
+        // Then: focus moves to the message list
+        assert_eq!(a.focus, Focus::MessageList);
+    }
+
+    #[test]
+    fn right_on_collapsed_account_expands() {
+        // Given: sidebar focus on a collapsed account header
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 1;
+        a.sidebar_on_account = true;
+        assert!(!a.accounts[1].expanded);
+
+        // When: Right is pressed
+        a.dispatch(KeyAction::PaneRight);
+
+        // Then: that account is expanded (focus stays in sidebar)
+        assert!(a.accounts[1].expanded);
+        assert_eq!(a.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn right_on_expanded_account_or_folder_goes_to_list() {
+        // Given: sidebar focus on an expanded account or a folder
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 0;
+        a.sidebar_on_account = true;
+        assert!(a.accounts[0].expanded);
+
+        // When: Right is pressed on expanded account
+        a.dispatch(KeyAction::PaneRight);
+
+        // Then: focus moves to the message list
+        assert_eq!(a.focus, Focus::MessageList);
+
+        // And: Right on a folder does the same
+        a.focus = Focus::Sidebar;
+        a.sidebar_on_account = false;
+        a.sidebar_folder_idx = 0;
+        a.dispatch(KeyAction::PaneRight);
+        assert_eq!(a.focus, Focus::MessageList);
+    }
+
+    #[test]
+    fn left_on_expanded_account_collapses() {
+        // Given: sidebar focus on an expanded account header
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 0;
+        a.sidebar_on_account = true;
+        assert!(a.accounts[0].expanded);
+
+        // When: Left is pressed
+        a.dispatch(KeyAction::PaneLeft);
+
+        // Then: that account is collapsed
+        assert!(!a.accounts[0].expanded);
+    }
+
+    #[test]
+    fn left_on_folder_selects_parent_account() {
+        // Given: sidebar focus on a folder under an account
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 0;
+        a.sidebar_folder_idx = 2;
+        a.sidebar_on_account = false;
+
+        // When: Left is pressed
+        a.dispatch(KeyAction::PaneLeft);
+
+        // Then: selection moves to that account’s header
+        assert!(a.sidebar_on_account);
+        assert_eq!(a.sidebar_account_idx, 0);
+    }
+
+    #[test]
+    fn left_right_cycle_panes_from_list_and_reader() {
+        // Given: focus on message list (or reader)
+        let mut a = app();
+        a.focus = Focus::MessageList;
+
+        // When / Then: Left or Right moves Sidebar ↔ List ↔ Reader
+        a.dispatch(KeyAction::PaneRight);
+        assert_eq!(a.focus, Focus::Reader);
+        a.dispatch(KeyAction::PaneLeft);
+        assert_eq!(a.focus, Focus::MessageList);
+        a.dispatch(KeyAction::PaneLeft);
+        assert_eq!(a.focus, Focus::Sidebar);
+        a.dispatch(KeyAction::PaneRight);
+        assert_eq!(a.focus, Focus::MessageList);
+    }
+
+    #[test]
+    fn jk_skips_folders_of_collapsed_accounts() {
+        // Given: two accounts, second collapsed; start on last folder of first
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 0;
+        a.sidebar_on_account = false;
+        a.sidebar_folder_idx = a.accounts[0].folders.len() - 1;
+        assert!(!a.accounts[1].expanded);
+
+        // When: j walks past the first account
+        a.dispatch(KeyAction::Down);
+
+        // Then: only account headers and folders of expanded accounts are visited
+        assert_eq!(a.sidebar_account_idx, 1);
+        assert!(a.sidebar_on_account);
     }
 }

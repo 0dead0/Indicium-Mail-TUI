@@ -23,16 +23,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     for (ai, av) in app.accounts.iter().enumerate() {
         let is_acc_sel = ai == app.sidebar_account_idx;
         let arrow = if av.expanded { "v" } else { ">" };
-        let acc_line = Line::from(vec![
+        let mut acc_line = Line::from(vec![
             Span::styled(format!(" {} ", arrow), theme::muted()),
             Span::styled(av.account.display_name.clone(), theme::accent()),
             Span::styled(format!("  {}", av.account.address.email), theme::muted()),
         ]);
+        if is_acc_sel && app.sidebar_on_account {
+            acc_line = acc_line.patch_style(theme::selected());
+        }
         items.push(ListItem::new(acc_line));
 
         if av.expanded {
             for (fi, folder) in av.folders.iter().enumerate() {
-                let selected = is_acc_sel && fi == app.sidebar_folder_idx;
+                let selected = is_acc_sel && !app.sidebar_on_account && fi == app.sidebar_folder_idx;
                 let loaded = app.data.messages(folder.id);
                 // Use live count when messages have been loaded into the snapshot.
                 // Only fall back to the server-reported count when the snapshot

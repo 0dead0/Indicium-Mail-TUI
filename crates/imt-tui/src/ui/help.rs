@@ -27,8 +27,9 @@ pub fn render(f: &mut Frame, full: Rect) {
         ("g / G", "top / bottom"),
         ("PgDn / PgUp", "page down / up"),
         ("Tab / Shift-Tab", "next / prev pane"),
+        ("← / →", "prev / next pane; in sidebar expand/collapse account"),
         ("} / {", "next / prev account"),
-        ("Enter", "open selected"),
+        ("Enter", "open message; in sidebar expand account or open folder"),
         ("Esc", "back / cancel"),
     ]));
     lines.push(Line::from(""));

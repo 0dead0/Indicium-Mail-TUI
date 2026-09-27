@@ -119,8 +119,9 @@ Global flags: `--db <path>`, `--config <path>`, `--log-file <path>`.
 | Key | Action |
 |---|---|
 | `Tab` / `Shift-Tab` | cycle focus |
-| `j` `k` / arrows | move within focused pane |
-| `Enter` | open message |
+| `j` `k` / `↑` `↓` | move within focused pane |
+| `←` / `→` | previous / next pane; in sidebar expand/collapse account (or go to list) |
+| `Enter` | open message; in sidebar toggle account expand or focus list from a folder |
 | `Esc` | back |
 | `c` | compose |
 | `r` / `R` | reply / reply-all |
@@ -149,7 +150,7 @@ In compose: `Tab` next field, `Ctrl-G` AI reply, `Ctrl-T` AI reply with an instr
 Mouse support is enabled, and the whole interface is clickable:
 
 - **Menu bar:** click a top menu to open its dropdown (or run it directly); click a dropdown item to run it; click away to close.
-- **Sidebar:** click an account to expand/collapse it, click a folder to switch to it.
+- **Sidebar:** click an account to expand/collapse it, click a folder to switch to it. Keyboard: select the account row with `j`/`k`, `Enter` or `→` to expand, `Enter`/`←` to collapse; on a folder `Enter`/`→` focuses the message list.
 - **Message list:** click an email to open it in the reading pane.
 - **Scroll wheel** scrolls whichever pane is under the cursor.
 - **Resize/move:** drag the dividers between the account, inbox, and reading panes to resize them; drag the compose window's title bar to move it and its bottom-right corner to resize it. Pane sizes and the compose window's position/size persist across restarts.

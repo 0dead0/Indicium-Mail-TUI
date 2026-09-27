@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Keyboard expand/collapse for sidebar accounts.** Account headers are selectable with `j`/`k`. `Enter` or `→` expands a collapsed account; `Enter` or `←` collapses an expanded one. On a folder, `Enter`/`→` focuses the message list; `←` selects the parent account. `←`/`→` also move focus Sidebar ↔ List ↔ Reader (alongside Tab).
+
 ## [0.3.0] - 2026-06-23
 
 ### Added
