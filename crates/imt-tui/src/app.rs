@@ -394,6 +394,8 @@ pub struct App {
     pub sidebar_folder_idx: usize,
     pub messages: Vec<Message>,
     pub message_idx: usize,
+    /// First visible message index in the list pane (Ratatui table offset).
+    pub list_offset: usize,
     pub current_body: Option<MessageBody>,
     pub reader_scroll: u16,
     pub status: String,
@@ -726,6 +728,7 @@ impl App {
             sidebar_folder_idx: initial_folder_idx,
             messages: Vec::new(),
             message_idx: 0,
+            list_offset: 0,
             current_body: None,
             reader_scroll: 0,
             status: String::new(),
@@ -953,6 +956,9 @@ impl App {
         }
         if self.message_idx >= self.messages.len() {
             self.message_idx = self.messages.len().saturating_sub(1);
+        }
+        if self.list_offset > 0 && self.list_offset >= self.messages.len() {
+            self.list_offset = self.messages.len().saturating_sub(1);
         }
         self.refresh_body();
     }
@@ -1552,6 +1558,7 @@ impl App {
                     self.sidebar_account_idx = ai;
                     self.sidebar_folder_idx = fi;
                     self.message_idx = 0;
+                    self.list_offset = 0;
                     self.focus = Focus::MessageList;
                     self.refresh_messages();
                 }
@@ -1626,7 +1633,7 @@ impl App {
     }
 
     /// Map a screen row in the message list to a message index, accounting for
-    /// the optional 2-line snippet rows.
+    /// the optional 2-line snippet rows and the current list scroll offset.
     fn message_at_row(&self, row: u16) -> Option<usize> {
         let inner_top = self.ui_list.y + 1; // inside the top border
         if row < inner_top {
@@ -1634,7 +1641,7 @@ impl App {
         }
         let show_snippet = self.settings.show_snippet;
         let mut r = inner_top;
-        for (i, m) in self.messages.iter().enumerate() {
+        for (i, m) in self.messages.iter().enumerate().skip(self.list_offset) {
             let h = if show_snippet && !m.snippet.is_empty() { 2 } else { 1 };
             if row >= r && row < r + h {
                 return Some(i);
@@ -2886,5 +2893,57 @@ mod mouse_tests {
         assert_eq!(a.message_at_row(2), Some(1));
         // The top border row is not a message.
         assert_eq!(a.message_at_row(0), None);
+    }
+
+    #[test]
+    fn scrolled_list_first_visible_row_maps_to_offset_message() {
+        // Given: list pane with show_snippet off and list scroll offset past 0
+        let mut a = app();
+        a.settings.show_snippet = false;
+        a.ui_list = Rect { x: 0, y: 0, width: 40, height: 20 };
+        assert!(a.messages.len() > 3, "sample inbox needs enough rows");
+        a.list_offset = 3;
+
+        // When: message_at_row is asked for the first inner row
+        let hit = a.message_at_row(1);
+
+        // Then: it returns the message index at that offset (not always 0)
+        assert_eq!(hit, Some(3));
+    }
+
+    #[test]
+    fn scrolled_list_border_row_still_maps_to_nothing() {
+        // Given: list pane with a non-zero scroll offset
+        let mut a = app();
+        a.settings.show_snippet = false;
+        a.ui_list = Rect { x: 0, y: 0, width: 40, height: 20 };
+        a.list_offset = 3;
+
+        // When: message_at_row is asked for the top border row
+        let hit = a.message_at_row(0);
+
+        // Then: it returns None
+        assert_eq!(hit, None);
+    }
+
+    #[test]
+    fn scrolled_list_snippet_rows_use_height_two() {
+        // Given: show_snippet on, messages with snippets, and a non-zero list scroll offset
+        let mut a = app();
+        a.settings.show_snippet = true;
+        a.ui_list = Rect { x: 0, y: 0, width: 40, height: 20 };
+        assert!(a.messages.len() > 3, "sample inbox needs enough rows");
+        assert!(
+            a.messages.iter().take(4).all(|m| !m.snippet.is_empty()),
+            "sample messages need snippets for height-2 rows"
+        );
+        a.list_offset = 1;
+
+        // When: message_at_row is asked for successive inner rows
+        // Then: indices advance by two terminal lines per message from the offset start
+        assert_eq!(a.message_at_row(1), Some(1));
+        assert_eq!(a.message_at_row(2), Some(1));
+        assert_eq!(a.message_at_row(3), Some(2));
+        assert_eq!(a.message_at_row(4), Some(2));
     }
 }

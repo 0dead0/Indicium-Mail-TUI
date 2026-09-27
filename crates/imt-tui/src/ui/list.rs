@@ -3,7 +3,7 @@
 use chrono::{DateTime, Datelike, Local, Utc};
 use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -48,7 +48,7 @@ fn truncate_to(s: &str, width: usize) -> String {
 }
 
 /// Render the message list pane.
-pub fn render(f: &mut Frame, area: Rect, app: &App) {
+pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let focused = app.focus == Focus::MessageList;
     let title = match app.current_folder() {
         Some(folder) => {
@@ -74,6 +74,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
             .alignment(Alignment::Center)
             .block(block);
         f.render_widget(p, area);
+        app.list_offset = 0;
         return;
     }
 
@@ -81,8 +82,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let rows: Vec<Row> = app
         .messages
         .iter()
-        .enumerate()
-        .map(|(i, m)| {
+        .map(|m| {
             let unread = m.is_unread();
             let flagged = m.is_flagged();
             let answered = m.is_answered();
@@ -131,17 +131,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
             let height = if show_snippet && !m.snippet.is_empty() { 2 } else { 1 };
 
-            let mut row = Row::new(vec![
+            Row::new(vec![
                 Cell::from(Span::styled(indicator.to_string(), ind_style)),
                 Cell::from(Span::styled(from, row_style)),
                 subject_cell,
                 Cell::from(Span::styled(date, theme::muted())),
             ])
-            .height(height);
-            if i == app.message_idx {
-                row = row.style(theme::selected());
-            }
-            row
+            .height(height)
         })
         .collect();
 
@@ -152,6 +148,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         Constraint::Length(7),
     ];
 
-    let table = Table::new(rows, widths).block(block).column_spacing(1);
-    f.render_widget(table, area);
+    let table = Table::new(rows, widths)
+        .block(block)
+        .column_spacing(1)
+        .highlight_style(theme::selected())
+        .highlight_symbol("");
+
+    let mut state = TableState::default();
+    *state.offset_mut() = app.list_offset;
+    state.select(Some(app.message_idx));
+    f.render_stateful_widget(table, area, &mut state);
+    app.list_offset = state.offset();
 }
