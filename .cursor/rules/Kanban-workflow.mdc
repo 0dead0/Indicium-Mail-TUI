@@ -1,0 +1,45 @@
+---
+description: Kanban intake, relate work to existing cards, explicit column moves
+alwaysApply: true
+---
+
+# Kanban workflow (intake)
+
+Board: `.devtool/features/` (Kanban Markdown). Card lifecycle / `done` rules: see [Kanban-definition-of-done](Kanban-definition-of-done.mdc).
+
+Columns: `backlog` → `todo` → `in-progress` → `review` → `ops` → `done`.
+
+## On a change request
+
+1. Scan the board for an **existing** card that matches the request.
+2. **Match found** → state it (title + id). Do **not** ask to add a new story. User may correct the mapping.
+3. **No clear match** → ask: **Put this on the kanban board?**  
+   Skip that ask when the user already answered, named a card, or said `/kanban` / “no board”.
+
+## If yes (new card) — create
+
+1. New card in `backlog` unless user asks another status (`todo`, `in-progress`, …).
+2. **User-faced** → user story when possible:
+   - Title: capability phrasing (`Actor can …`)
+   - Story: As a … / I want … / so that …
+   - Acceptance criteria: Given / When / Then
+3. **Tech-only / internal** → card if requested; story form only if it fits; else short tech title + scope + AC-style checks.
+4. Keep cards current: status, scope, and **departures** from the suggested solution (see DoD rule).
+
+## If no
+
+Proceed without a card. Do not invent board work.
+
+## Column moves (explicit)
+
+Never change `status` silently.
+
+- **Ask** before moving when the next column is unclear or consequential (esp. into `review` / `ops` / `done`).
+- Or **state** the move in chat when acting (`Title`: `from` → `to`) in the same turn as the file edit.
+- `ops` requires user-confirmed review. `done` requires full DoD + user-confirmed ops — DoD rule owns that; stating the move is not enough for `done`.
+
+## Do not
+
+- Propose a **new** card when work clearly belongs to an existing one (name that card instead).
+- Move a card to `done` without DoD (including user-confirmed review and ops).
+- Silently diverge from a card’s suggested solution without documenting the departure on the card.

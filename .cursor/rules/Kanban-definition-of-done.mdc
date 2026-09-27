@@ -1,0 +1,56 @@
+---
+description: Kanban as work visualization; Definition of Done before moving cards to done
+alwaysApply: true
+---
+
+# Kanban + Definition of Done
+
+## Kanban role
+
+- Board under `.devtool/features/` (Kanban Markdown) is the **visualization of work** for this project.
+- Reflect status, scope, and departures on cards. Don't leave them stale after implementation.
+- When shipping differs from a card’s suggested solution, **document the departure on the card** (do not silently diverge).
+
+## Column meanings
+
+| Status | Meaning |
+|--------|---------|
+| `review` | Implementation believed complete; awaiting human review (and other pre-ops DoD items). |
+| `ops` | Review accepted; install / release / post-ship checklist in progress or pending. |
+| `done` | Full DoD satisfied (including ops), or a recorded exception. |
+
+## Definition of Done (before `status: done`)
+
+A card may move to **done** only when all apply (or an explicit exception is recorded — see below):
+
+1. **Behavior** — Acceptance criteria met in code.
+2. **Tests** — Automated tests cover the shipped behavior (fail-before / pass-after for changes; Given/When/Then style used in this repo). Relevant suite green (`cargo test` for touched crates / workspace as appropriate).
+3. **Documentation** — Project docs that own the area updated if behavior/UX/MCP/ops changed (`DOCUMENTATION.md`, `MCP_DOCUMENTATION.md`, `README.md`, etc.). Prefer updating existing docs over new files.
+4. **Changelog** — `CHANGELOG.md` entry when the change is user-visible or notable technical behavior.
+5. **Review** — Human / overall review completed (card sat in `review` and was accepted). Agent must **not** move past `review` without explicit user confirmation that review passed.
+6. **Ops** — Install / release checklist done for this change (card sat in `ops`). Agent must **not** move a card to `done` without explicit user confirmation that ops passed (or N/A with reason on the card).
+
+### Ops checklist (pick what applies; mark N/A + why)
+
+Feature-specific steps live on the card and/or owning docs.
+
+- [ ] **Build** — `./manage.sh check` (or `cargo check`) clean for touched crates
+- [ ] **Lint** — `./manage.sh lint` / clippy clean when Rust sources changed
+- [ ] **Install / binary** — release binary updated where the user expects it (`./manage.sh install` and/or `cargo install --path crates/imt --locked`) when the shipped change affects the installed `imt`
+- [ ] **MCP** — if MCP tools/behavior changed: `MCP_DOCUMENTATION.md` matches; smoke via `imt mcp` / agent tools as relevant
+- [ ] **Smoke** — happy path for the shipped behavior (TUI and/or CLI/MCP)
+- [ ] **Notes** — non-obvious ops recorded on the card and/or in project docs
+
+Pure local/docs/test-only cards: Ops may be **N/A** with a one-line reason on the card.
+
+## Departing from DoD
+
+Exceptions allowed only with a **valid, stated reason** on the card (and in chat if the agent moves the card). Examples of valid reasons: docs deferred pending product naming; changelog held for release batch with explicit TODO; test blocked by missing env with follow-up card; review deferred with named owner/date; ops deferred with named owner/date or N/A for non-ship work.
+
+Invalid: “skip docs/review/ops to move faster” with no recorded reason.
+
+## Agent habits
+
+- Before proposing `status: ops`, verify behavior + tests + docs + changelog + **user-confirmed review** (or state the DoD exception).
+- Before proposing `status: done`, verify **user-confirmed ops** (or stated N/A / exception).
+- Incomplete DoD → keep **review** / **ops** / **backlog** / follow-up card; do not mark **done**.
