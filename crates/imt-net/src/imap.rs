@@ -278,6 +278,25 @@ fn map_role(path: &str, attrs: &[NameAttribute<'_>]) -> FolderRole {
     }
 }
 
+/// Whether an IMAP LIST mailbox should be STATUS/SELECT/envelope-synced.
+///
+/// `listed_noselect` is true when LIST attributes include `\Noselect`.
+/// Bare `[Gmail]` is always non-selectable (Gmail hierarchy prefix).
+pub fn is_selectable_mailbox(path: &str, listed_noselect: bool) -> bool {
+    if listed_noselect {
+        return false;
+    }
+    // Gmail LIST parent; SELECT returns NONEXISTENT even when attrs are missing.
+    if path.eq_ignore_ascii_case("[Gmail]") {
+        return false;
+    }
+    true
+}
+
+fn attrs_include_noselect(attrs: &[NameAttribute<'_>]) -> bool {
+    attrs.iter().any(|a| matches!(a, NameAttribute::NoSelect))
+}
+
 fn folder_display_name(path: &str, delimiter: Option<&str>) -> String {
     if let Some(d) = delimiter {
         if !d.is_empty() {
@@ -575,6 +594,10 @@ impl MailBackend for ImapBackend {
         let mut out = Vec::with_capacity(names.len());
         for n in &names {
             let path = n.name().to_string();
+            let noselect = attrs_include_noselect(n.attributes());
+            if !is_selectable_mailbox(&path, noselect) {
+                continue;
+            }
             let role = map_role(&path, n.attributes());
             let display = folder_display_name(&path, n.delimiter());
 
@@ -1055,5 +1078,43 @@ mod attach_detect_tests {
         assert!(!header_has_attachments(alt));
         let none = b"Subject: x\r\n\r\n";
         assert!(!header_has_attachments(none));
+    }
+}
+
+#[cfg(test)]
+mod selectable_mailbox_tests {
+    use super::is_selectable_mailbox;
+
+    #[test]
+    fn noselect_attribute_is_not_selectable() {
+        // Given: LIST marks the mailbox \Noselect
+        let path = "[Gmail]";
+
+        // When: selectability is checked
+        let ok = is_selectable_mailbox(path, true);
+
+        // Then: it must not be STATUS/SELECT/synced
+        assert!(!ok);
+    }
+
+    #[test]
+    fn bare_gmail_prefix_is_not_selectable_without_attr() {
+        // Given: bare [Gmail] hierarchy prefix with no \Noselect flag in attrs
+        let path = "[Gmail]";
+
+        // When: selectability is checked
+        let ok = is_selectable_mailbox(path, false);
+
+        // Then: hard-skip still applies
+        assert!(!ok);
+    }
+
+    #[test]
+    fn gmail_child_and_inbox_remain_selectable() {
+        // Given: selectable children / inbox
+        // When / Then:
+        assert!(is_selectable_mailbox("[Gmail]/Spam", false));
+        assert!(is_selectable_mailbox("[Gmail]/All Mail", false));
+        assert!(is_selectable_mailbox("INBOX", false));
     }
 }

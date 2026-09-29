@@ -49,6 +49,11 @@ fn to_folder(
     }
 }
 
+/// Whether this stored folder may be SELECT/envelope-synced.
+fn should_envelope_sync(folder: &Folder) -> bool {
+    imt_net::is_selectable_mailbox(&folder.path, false)
+}
+
 /// Convert an envelope fetch into a fresh `Message` (new MessageId).
 fn to_message(account_id: AccountId, folder_id: FolderId, env: EnvelopeFetch) -> Message {
     let snippet = if env.snippet.is_empty() {
@@ -256,6 +261,10 @@ async fn sync_one_folder<B: MailBackend>(
     backend: &mut B,
     folder: &Folder,
 ) -> std::result::Result<(), SyncErrorReason> {
+    if !should_envelope_sync(folder) {
+        return Ok(());
+    }
+
     let _ = ctx.tx.send(SyncEvent::SyncStarted {
         account_id: ctx.account.id,
         folder_id: Some(folder.id),
@@ -398,4 +407,47 @@ fn _force_use_unused_imports(
     _: &MessageId,
 ) {
     debug!("noop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn folder(path: &str, role: FolderRole) -> Folder {
+        Folder {
+            id: FolderId::new(),
+            account_id: AccountId::new(),
+            path: path.into(),
+            name: path.into(),
+            role,
+            uid_validity: 0,
+            uid_next: 0,
+            message_count: 0,
+            unread_count: 0,
+        }
+    }
+
+    #[test]
+    fn leftover_gmail_parent_is_not_envelope_synced() {
+        // Given: a leftover DB row for Gmail's non-selectable parent
+        let f = folder("[Gmail]", FolderRole::Other);
+
+        // When: envelope-sync eligibility is checked
+        let ok = should_envelope_sync(&f);
+
+        // Then: SELECT/sync is skipped
+        assert!(!ok);
+    }
+
+    #[test]
+    fn selectable_child_is_envelope_synced() {
+        // Given: a normal Gmail child mailbox
+        let f = folder("[Gmail]/Spam", FolderRole::Junk);
+
+        // When: envelope-sync eligibility is checked
+        let ok = should_envelope_sync(&f);
+
+        // Then: sync is allowed
+        assert!(ok);
+    }
 }

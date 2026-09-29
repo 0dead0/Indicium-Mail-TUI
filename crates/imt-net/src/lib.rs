@@ -10,6 +10,6 @@ pub use backend::{
     EnvelopeFetch, FolderInfo, FolderState, IdleEvent, IdleHandle, MailBackend, UidRange,
 };
 pub use error::{NetError, Result};
-pub use imap::ImapBackend;
+pub use imap::{is_selectable_mailbox, ImapBackend};
 pub use oauth::{xoauth2_sasl, CsrfToken, OAuthFlow, OAuthProvider, OAuthTokens, PkceVerifier};
 pub use smtp::{build_rfc822, BuildDraft, DraftAttachmentRef, SmtpSender};

@@ -120,6 +120,10 @@ impl SyncEngine {
         let acc = AccountRepo::new(self.db.pool()).get(account).await?;
         let folder = FolderRepo::new(self.db.pool()).get(folder_id).await?;
 
+        if !imt_net::is_selectable_mailbox(&folder.path, false) {
+            return Ok(());
+        }
+
         let provider = imap_provider_for(&acc);
         let mut backend = ImapBackend::new(acc.clone(), provider);
         backend.connect().await?;
