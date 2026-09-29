@@ -19,6 +19,7 @@ use imt_store::{secrets, AccountRepo, Db, DraftRepo, FolderRepo, MessageRepo};
 use crate::account_task::{run as run_account_task, AccountTaskCtx};
 use crate::error::{Result, SyncError};
 use crate::password::{delete_all, imap_provider_for, smtp_provider_for, store_password};
+use crate::uid_window::{envelope_sync_range, INITIAL_SYNC_UID_WINDOW};
 
 /// OAuth2 code exchange info passed to `add_account` when setting up a new
 /// OAuth2 account. The engine exchanges the authorization code for tokens and
@@ -134,20 +135,44 @@ impl SyncEngine {
         });
 
         let state = backend.select_folder(&folder.path).await?;
-        // One-time full rescan so existing messages (synced before attachment
-        // detection) get their has_attachments flag set from BODYSTRUCTURE.
+        // One-time attachment scan uses the same recent-UID window (not full history).
         let need_attachment_scan = !FolderRepo::new(self.db.pool())
             .attachments_scanned(folder_id)
             .await
             .unwrap_or(false);
         let last_uid_next = folder.uid_next;
-        let range = if need_attachment_scan || last_uid_next == 0 || state.uid_next <= last_uid_next {
-            imt_net::backend::UidRange::All
-        } else {
-            imt_net::backend::UidRange::Range(
-                last_uid_next,
-                state.uid_next.saturating_sub(1).max(last_uid_next),
-            )
+        let needs_full_resync =
+            folder.uid_validity != 0 && folder.uid_validity != state.uid_validity;
+        let Some(range) = envelope_sync_range(
+            last_uid_next,
+            state.uid_next,
+            needs_full_resync,
+            need_attachment_scan,
+            INITIAL_SYNC_UID_WINDOW,
+        ) else {
+            let folder_repo = FolderRepo::new(self.db.pool());
+            let updated = imt_core::Folder {
+                uid_validity: state.uid_validity,
+                uid_next: state.uid_next,
+                message_count: state.exists,
+                unread_count: state.unseen,
+                ..folder
+            };
+            folder_repo.upsert(&updated).await?;
+            if need_attachment_scan {
+                let _ = folder_repo.mark_attachments_scanned(folder_id).await;
+            }
+            let _ = self.tx.send(SyncEvent::FolderCountsChanged {
+                folder_id,
+                total: state.exists,
+                unread: state.unseen,
+            });
+            let _ = self.tx.send(SyncEvent::SyncFinished {
+                account_id: account,
+                folder_id: Some(folder_id),
+            });
+            let _ = backend.disconnect().await;
+            return Ok(());
         };
 
         let envelopes = backend.fetch_envelopes(&folder.path, range).await?;

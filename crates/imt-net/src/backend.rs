@@ -41,7 +41,7 @@ pub struct FolderState {
 }
 
 /// Selector for which UIDs should be fetched.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UidRange {
     /// Inclusive `[start, end]` UID range.
     Range(u32, u32),

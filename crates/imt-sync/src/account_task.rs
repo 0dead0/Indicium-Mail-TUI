@@ -12,12 +12,13 @@ use imt_core::{
     Account, AccountId, Address, Flag, Folder, FolderId, FolderRole, Message, MessageHeaders,
     MessageId, SyncEvent, Uid,
 };
-use imt_net::backend::{EnvelopeFetch, FolderInfo, IdleEvent, MailBackend, UidRange};
+use imt_net::backend::{EnvelopeFetch, FolderInfo, IdleEvent, MailBackend};
 use imt_net::ImapBackend;
 use imt_store::{Db, FolderRepo, MessageRepo};
 
 use crate::password::{ensure_fresh_tokens, imap_provider_for};
 use crate::snippet::make_snippet;
+use crate::uid_window::{envelope_sync_range, INITIAL_SYNC_UID_WINDOW};
 
 const SNIPPET_MAX: usize = 256;
 const BACKOFF_INITIAL_SECS: u64 = 5;
@@ -48,6 +49,7 @@ fn to_folder(
         unread_count,
     }
 }
+
 
 /// Whether this stored folder may be SELECT/envelope-synced.
 fn should_envelope_sync(folder: &Folder) -> bool {
@@ -294,15 +296,34 @@ async fn sync_one_folder<B: MailBackend>(
         .await
         .unwrap_or(false);
 
-    let range = if needs_full_resync || last_uid_next == 0 || need_attachment_scan {
-        if state.uid_next > 1 {
-            UidRange::Range(1, state.uid_next.saturating_sub(1).max(1))
-        } else {
-            UidRange::All
+    let Some(range) = envelope_sync_range(
+        last_uid_next,
+        state.uid_next,
+        needs_full_resync,
+        need_attachment_scan,
+        INITIAL_SYNC_UID_WINDOW,
+    ) else {
+        // Empty folder or already caught up: still persist SELECT state so
+        // first-pass empty mailboxes leave `uid_next == 0` (stale).
+        let updated = Folder {
+            uid_validity: state.uid_validity,
+            uid_next: state.uid_next,
+            message_count: state.exists,
+            unread_count: state.unseen,
+            ..folder.clone()
+        };
+        folder_repo
+            .upsert(&updated)
+            .await
+            .map_err(|e| SyncErrorReason::Other(format!("update folder counts: {}", e)))?;
+        if need_attachment_scan {
+            let _ = folder_repo.mark_attachments_scanned(folder.id).await;
         }
-    } else if state.uid_next > last_uid_next {
-        UidRange::Range(last_uid_next, state.uid_next.saturating_sub(1).max(last_uid_next))
-    } else {
+        let _ = ctx.tx.send(SyncEvent::FolderCountsChanged {
+            folder_id: folder.id,
+            total: state.exists,
+            unread: state.unseen,
+        });
         let _ = ctx.tx.send(SyncEvent::SyncFinished {
             account_id: ctx.account.id,
             folder_id: Some(folder.id),

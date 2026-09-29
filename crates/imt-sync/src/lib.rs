@@ -6,6 +6,7 @@ pub mod engine;
 pub mod error;
 pub mod password;
 pub mod snippet;
+pub mod uid_window;
 
 pub use engine::SyncEngine;
 pub use error::{Result, SyncError};
