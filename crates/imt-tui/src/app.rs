@@ -966,6 +966,18 @@ impl App {
         self.refresh_body();
     }
 
+    /// After the user selects a folder: request sync if stale, then load envelopes.
+    fn open_selected_folder(&mut self) {
+        if let Some(folder) = self.current_folder() {
+            if folder.is_stale() {
+                let account = folder.account_id;
+                let id = folder.id;
+                self.data.refresh(Some(account), Some(id));
+            }
+        }
+        self.refresh_messages();
+    }
+
     fn refresh_body(&mut self) {
         self.current_body = self
             .current_message()
@@ -1565,7 +1577,7 @@ impl App {
                     self.message_idx = 0;
                     self.list_offset = 0;
                     self.focus = Focus::MessageList;
-                    self.refresh_messages();
+                    self.open_selected_folder();
                 }
                 None => {}
             }
@@ -2113,7 +2125,7 @@ impl App {
                         av.expanded = true;
                     }
                 }
-                self.refresh_messages();
+                self.open_selected_folder();
                 self.onboarding = None;
                 self.mode = Mode::Normal;
                 self.status = "Account added".into();
@@ -2592,14 +2604,14 @@ impl App {
             if prev.expanded && !prev.folders.is_empty() {
                 self.sidebar_on_account = false;
                 self.sidebar_folder_idx = prev.folders.len() - 1;
-                self.refresh_messages();
+                self.open_selected_folder();
             }
             // else stay on previous account header; leave message list alone
             return;
         }
         if self.sidebar_folder_idx > 0 {
             self.sidebar_folder_idx -= 1;
-            self.refresh_messages();
+            self.open_selected_folder();
         } else {
             self.sidebar_on_account = true;
         }
@@ -2620,7 +2632,7 @@ impl App {
             if expanded && folders_len > 0 {
                 self.sidebar_on_account = false;
                 self.sidebar_folder_idx = 0;
-                self.refresh_messages();
+                self.open_selected_folder();
             } else if self.sidebar_account_idx + 1 < self.accounts.len() {
                 self.sidebar_account_idx += 1;
                 self.sidebar_on_account = true;
@@ -2634,7 +2646,7 @@ impl App {
             .unwrap_or(0);
         if self.sidebar_folder_idx + 1 < folders_len {
             self.sidebar_folder_idx += 1;
-            self.refresh_messages();
+            self.open_selected_folder();
         } else if self.sidebar_account_idx + 1 < self.accounts.len() {
             self.sidebar_account_idx += 1;
             self.sidebar_on_account = true;
@@ -2686,7 +2698,7 @@ impl App {
         let new = ((self.sidebar_account_idx as i32 + delta).rem_euclid(n as i32)) as usize;
         self.sidebar_account_idx = new;
         self.sidebar_folder_idx = 0;
-        self.refresh_messages();
+        self.open_selected_folder();
     }
 
     fn open_message(&mut self) {
@@ -3203,5 +3215,77 @@ mod sidebar_nav_tests {
         // Then: only account headers and folders of expanded accounts are visited
         assert_eq!(a.sidebar_account_idx, 1);
         assert!(a.sidebar_on_account);
+    }
+
+}
+
+#[cfg(test)]
+mod stale_open_sync_tests {
+    use super::*;
+    use crate::data::InMemoryDataSource;
+    use imt_core::FolderRole;
+    use std::sync::Arc;
+
+    fn sample_with_stale_sent() -> (InMemoryDataSource, imt_core::FolderId) {
+        let ds = InMemoryDataSource::sample();
+        let acc = ds.accounts()[0].id;
+        let sent = ds
+            .folders(acc)
+            .into_iter()
+            .find(|f| f.role == FolderRole::Sent)
+            .expect("sample has Sent");
+        ds.set_folder_uid_next(sent.id, 0);
+        (ds, sent.id)
+    }
+
+    #[test]
+    fn opening_stale_folder_requests_sync() {
+        // Given: Sent has never been envelope-synced (stale)
+        let (ds, sent_id) = sample_with_stale_sent();
+        let mut a = App::new(Arc::new(ds.clone()));
+        let sent_idx = a.accounts[0]
+            .folders
+            .iter()
+            .position(|f| f.id == sent_id)
+            .expect("Sent in sidebar");
+        let _ = ds.take_refreshes();
+
+        // When: user opens Sent
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 0;
+        a.sidebar_on_account = false;
+        a.sidebar_folder_idx = sent_idx;
+        a.open_selected_folder();
+
+        // Then: a folder sync is requested for Sent
+        let refreshes = ds.take_refreshes();
+        assert_eq!(refreshes, vec![(Some(a.accounts[0].account.id), Some(sent_id))]);
+    }
+
+    #[test]
+    fn opening_fresh_folder_does_not_request_sync() {
+        // Given: Sent is already synced (not stale)
+        let ds = InMemoryDataSource::sample();
+        let mut a = App::new(Arc::new(ds.clone()));
+        let sent_id = a.accounts[0]
+            .folders
+            .iter()
+            .find(|f| f.role == FolderRole::Sent)
+            .map(|f| f.id)
+            .expect("Sent");
+        let sent_idx = a.accounts[0]
+            .folders
+            .iter()
+            .position(|f| f.id == sent_id)
+            .unwrap();
+        let _ = ds.take_refreshes();
+
+        // When: user opens Sent
+        a.focus = Focus::Sidebar;
+        a.sidebar_folder_idx = sent_idx;
+        a.open_selected_folder();
+
+        // Then: no sync is requested from open
+        assert!(ds.take_refreshes().is_empty());
     }
 }

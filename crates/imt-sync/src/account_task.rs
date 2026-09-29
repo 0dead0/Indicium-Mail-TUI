@@ -50,6 +50,13 @@ fn to_folder(
     }
 }
 
+/// Folder to envelope-sync at connect before IDLE (Inbox, else first folder).
+fn primary_folder_for_sync(folders: &[Folder]) -> Option<&Folder> {
+    folders
+        .iter()
+        .find(|f| f.role == FolderRole::Inbox)
+        .or_else(|| folders.first())
+}
 
 /// Whether this stored folder may be SELECT/envelope-synced.
 fn should_envelope_sync(folder: &Folder) -> bool {
@@ -155,7 +162,10 @@ async fn run_once(ctx: &AccountTaskCtx) -> std::result::Result<(), SyncErrorReas
 
     let folders = sync_folder_list(ctx, &mut backend).await?;
 
-    for f in &folders {
+    // Connect: sync primary (Inbox) only, then IDLE. Other folders sync on
+    // demand when opened while stale, or via SyncAll / auto-refresh.
+    let primary = primary_folder_for_sync(&folders);
+    if let Some(f) = primary {
         if ctx.cancel.notified_now() {
             return Err(SyncErrorReason::Cancelled);
         }
@@ -168,13 +178,7 @@ async fn run_once(ctx: &AccountTaskCtx) -> std::result::Result<(), SyncErrorReas
         }
     }
 
-    let inbox_path = folders
-        .iter()
-        .find(|f| f.role == FolderRole::Inbox)
-        .map(|f| f.path.clone())
-        .or_else(|| folders.first().map(|f| f.path.clone()));
-
-    let inbox_path = match inbox_path {
+    let inbox_path = match primary.map(|f| f.path.clone()) {
         Some(p) => p,
         None => {
             select! {
@@ -446,6 +450,49 @@ mod tests {
             message_count: 0,
             unread_count: 0,
         }
+    }
+
+    #[test]
+    fn connect_primary_prefers_inbox_role() {
+        // Given: folders including Inbox and Sent
+        let folders = vec![
+            folder("Sent", FolderRole::Sent),
+            folder("INBOX", FolderRole::Inbox),
+            folder("Archive", FolderRole::Archive),
+        ];
+
+        // When: primary folder for connect sync is chosen
+        let primary = primary_folder_for_sync(&folders);
+
+        // Then: Inbox is selected (not Sent / first list entry)
+        assert_eq!(primary.map(|f| f.path.as_str()), Some("INBOX"));
+    }
+
+    #[test]
+    fn connect_primary_falls_back_to_first_folder() {
+        // Given: no Inbox role among folders
+        let folders = vec![
+            folder("Sent", FolderRole::Sent),
+            folder("Archive", FolderRole::Archive),
+        ];
+
+        // When: primary folder for connect sync is chosen
+        let primary = primary_folder_for_sync(&folders);
+
+        // Then: the first folder is selected
+        assert_eq!(primary.map(|f| f.path.as_str()), Some("Sent"));
+    }
+
+    #[test]
+    fn connect_primary_empty_list_is_none() {
+        // Given: no folders
+        let folders: Vec<Folder> = vec![];
+
+        // When: primary folder for connect sync is chosen
+        let primary = primary_folder_for_sync(&folders);
+
+        // Then: none
+        assert!(primary.is_none());
     }
 
     #[test]

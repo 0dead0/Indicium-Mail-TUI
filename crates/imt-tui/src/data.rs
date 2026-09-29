@@ -86,12 +86,17 @@ struct InnerStore {
 #[derive(Clone)]
 pub struct InMemoryDataSource {
     inner: Arc<Mutex<InnerStore>>,
+    /// Recorded `refresh` calls (newest last). For tests.
+    refreshes: Arc<Mutex<Vec<(Option<AccountId>, Option<FolderId>)>>>,
 }
 
 impl InMemoryDataSource {
     /// Build an empty data source.
     pub fn new() -> Self {
-        Self { inner: Arc::new(Mutex::new(InnerStore::default())) }
+        Self {
+            inner: Arc::new(Mutex::new(InnerStore::default())),
+            refreshes: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     /// Build a data source pre-populated with sample accounts and messages.
@@ -99,6 +104,22 @@ impl InMemoryDataSource {
         let me = Self::new();
         me.seed();
         me
+    }
+
+    /// Drain recorded `refresh` invocations (test helper).
+    pub fn take_refreshes(&self) -> Vec<(Option<AccountId>, Option<FolderId>)> {
+        std::mem::take(&mut *self.refreshes.lock().unwrap())
+    }
+
+    /// Set `uid_next` on a folder (test helper for stale / fresh scenarios).
+    pub fn set_folder_uid_next(&self, folder: FolderId, uid_next: u32) {
+        let mut store = self.inner.lock().unwrap();
+        for folders in store.folders.values_mut() {
+            if let Some(f) = folders.iter_mut().find(|f| f.id == folder) {
+                f.uid_next = uid_next;
+                return;
+            }
+        }
     }
 
     fn seed(&self) {
@@ -325,6 +346,10 @@ impl DataSource for InMemoryDataSource {
             }
         }
         out
+    }
+
+    fn refresh(&self, account: Option<AccountId>, folder: Option<FolderId>) {
+        self.refreshes.lock().unwrap().push((account, folder));
     }
 }
 

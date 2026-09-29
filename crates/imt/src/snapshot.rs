@@ -133,7 +133,20 @@ impl Snapshot {
                 self.set_status(String::new());
             }
             SyncEvent::SyncStarted { .. } => self.set_status("syncing"),
-            SyncEvent::SyncFinished { .. } => self.set_status("idle"),
+            SyncEvent::SyncFinished { folder_id, .. } => {
+                self.set_status("idle");
+                if let Some(folder_id) = folder_id {
+                    let updated = FolderRepo::new(pool).get(*folder_id).await?;
+                    self.write(|s| {
+                        for fs in s.folders_by_account.values_mut() {
+                            if let Some(f) = fs.iter_mut().find(|f| f.id == *folder_id) {
+                                *f = updated;
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
             SyncEvent::FolderListUpdated { account_id } => {
                 let folders = FolderRepo::new(pool).list_by_account(*account_id).await?;
                 self.write(|s| {
@@ -215,5 +228,114 @@ impl Snapshot {
             s.accounts.push(account);
             s.accounts.sort_by_key(|a| a.order);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use imt_core::{Address, AuthMethod, FolderRole, ImapConfig, SmtpConfig, Tls};
+
+    fn tmp_db_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "imt-snapshot-{}.sqlite3",
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    fn sample_account() -> Account {
+        let auth = AuthMethod::Password {
+            username: "me@example.com".into(),
+        };
+        Account {
+            id: AccountId::new(),
+            display_name: "Me".into(),
+            address: Address {
+                name: Some("Me".into()),
+                email: "me@example.com".into(),
+            },
+            imap: ImapConfig {
+                host: "imap".into(),
+                port: 993,
+                tls: Tls::Implicit,
+                auth: auth.clone(),
+            },
+            smtp: SmtpConfig {
+                host: "smtp".into(),
+                port: 465,
+                tls: Tls::Implicit,
+                auth,
+            },
+            order: 0,
+            keep_on_server: true,
+        }
+    }
+
+    fn sample_folder(account_id: AccountId, uid_next: u32) -> Folder {
+        Folder {
+            id: FolderId::new(),
+            account_id,
+            path: "Sent".into(),
+            name: "Sent".into(),
+            role: FolderRole::Sent,
+            uid_validity: 1,
+            uid_next,
+            message_count: 0,
+            unread_count: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_finished_reloads_folder_metadata_from_db() {
+        // Given: snapshot holds a stale folder; DB already has post-sync uid_next
+        let path = tmp_db_path();
+        let db = Db::open(&path).await.unwrap();
+        let pool = db.pool();
+        let account = sample_account();
+        AccountRepo::new(pool).upsert(&account).await.unwrap();
+        let folder = sample_folder(account.id, 0);
+        FolderRepo::new(pool).upsert(&folder).await.unwrap();
+
+        let snapshot = Snapshot::new();
+        snapshot.write(|s| {
+            s.accounts = vec![account.clone()];
+            s.folders_by_account
+                .insert(account.id, vec![folder.clone()]);
+        });
+
+        let synced = Folder {
+            uid_next: 42,
+            message_count: 3,
+            unread_count: 1,
+            ..folder.clone()
+        };
+        FolderRepo::new(pool).upsert(&synced).await.unwrap();
+
+        // When: folder sync completes
+        snapshot
+            .apply_event(
+                &db,
+                &SyncEvent::SyncFinished {
+                    account_id: account.id,
+                    folder_id: Some(folder.id),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Then: snapshot reflects DB metadata so the folder is no longer stale
+        let in_snapshot = snapshot
+            .read(|s| {
+                s.folders_by_account
+                    .get(&account.id)
+                    .and_then(|fs| fs.iter().find(|f| f.id == folder.id).cloned())
+            })
+            .expect("folder in snapshot");
+        assert_eq!(in_snapshot.uid_next, 42);
+        assert_eq!(in_snapshot.message_count, 3);
+        assert_eq!(in_snapshot.unread_count, 1);
+        assert!(!in_snapshot.is_stale());
+
+        let _ = std::fs::remove_file(&path);
     }
 }
