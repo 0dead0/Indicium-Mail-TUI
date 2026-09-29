@@ -84,7 +84,7 @@ pub fn render_modal(f: &mut Frame, area: Rect, app: &App) {
         line(
             s.field == SettingsField::AutoRefreshSecs,
             "Auto-refresh interval (s)",
-            format!("[{}]  (0 = off, IDLE still on)", s.auto_refresh_secs.value()),
+            format!("[{}]  (0 = off; polls current folder; IDLE always on)", s.auto_refresh_secs.value()),
         ),
         rows[0],
     );

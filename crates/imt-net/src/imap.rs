@@ -293,6 +293,28 @@ pub fn is_selectable_mailbox(path: &str, listed_noselect: bool) -> bool {
     true
 }
 
+/// Gmail (and similar) "All Mail" paths — huge duplicates of other folders.
+pub fn is_all_mail_folder(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with("/all mail")
+        || lower.ends_with("/wszystkie")
+        || lower == "[gmail]/all mail"
+        || lower == "[gmail]/wszystkie"
+}
+
+/// Folders included in bulk SyncAccount / SyncAll polls.
+///
+/// Excludes `\Noselect` / bare `[Gmail]` and All Mail (still syncable on demand
+/// when the user opens that folder).
+pub fn is_bulk_sync_folder(path: &str) -> bool {
+    is_selectable_mailbox(path, false) && !is_all_mail_folder(path)
+}
+
+/// Keep a DB folder row after LIST when it appears in the live list and is selectable.
+pub fn should_retain_stored_folder(path: &str, listed_paths: &std::collections::HashSet<String>) -> bool {
+    listed_paths.contains(path) && is_selectable_mailbox(path, false)
+}
+
 fn attrs_include_noselect(attrs: &[NameAttribute<'_>]) -> bool {
     attrs.iter().any(|a| matches!(a, NameAttribute::NoSelect))
 }
@@ -1083,7 +1105,11 @@ mod attach_detect_tests {
 
 #[cfg(test)]
 mod selectable_mailbox_tests {
-    use super::is_selectable_mailbox;
+    use std::collections::HashSet;
+
+    use super::{
+        is_bulk_sync_folder, is_selectable_mailbox, should_retain_stored_folder,
+    };
 
     #[test]
     fn noselect_attribute_is_not_selectable() {
@@ -1116,5 +1142,29 @@ mod selectable_mailbox_tests {
         assert!(is_selectable_mailbox("[Gmail]/Spam", false));
         assert!(is_selectable_mailbox("[Gmail]/All Mail", false));
         assert!(is_selectable_mailbox("INBOX", false));
+    }
+
+    #[test]
+    fn all_mail_is_excluded_from_bulk_sync() {
+        // Given: Gmail All Mail (EN / PL)
+        // When / Then: selectable on demand, but not in SyncAll / SyncAccount polls
+        assert!(is_selectable_mailbox("[Gmail]/All Mail", false));
+        assert!(!is_bulk_sync_folder("[Gmail]/All Mail"));
+        assert!(!is_bulk_sync_folder("[Gmail]/Wszystkie"));
+        assert!(is_bulk_sync_folder("INBOX"));
+        assert!(!is_bulk_sync_folder("[Gmail]"));
+    }
+
+    #[test]
+    fn leftover_gmail_parent_is_not_retained_after_list() {
+        // Given: LIST no longer returns bare [Gmail]; DB still has the row
+        let listed: HashSet<String> = ["INBOX".into(), "[Gmail]/Spam".into()]
+            .into_iter()
+            .collect();
+
+        // When / Then:
+        assert!(!should_retain_stored_folder("[Gmail]", &listed));
+        assert!(should_retain_stored_folder("INBOX", &listed));
+        assert!(!should_retain_stored_folder("Vanished", &listed));
     }
 }

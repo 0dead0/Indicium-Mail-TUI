@@ -1007,7 +1007,13 @@ impl App {
             let interval_ticks = (self.settings.auto_refresh_secs as u64) * 4;
             if self.ticks.saturating_sub(self.last_auto_refresh_tick) >= interval_ticks {
                 self.last_auto_refresh_tick = self.ticks;
-                self.data.refresh(None, None);
+                // Current folder only — never SyncAll (Gmail-scale accounts).
+                if let (Some(acc), Some(folder)) = (
+                    self.current_account().map(|a| a.id),
+                    self.current_folder().map(|f| f.id),
+                ) {
+                    self.data.refresh(Some(acc), Some(folder));
+                }
             }
         }
         let new_accounts = self.data.accounts();
@@ -3320,5 +3326,34 @@ mod stale_open_sync_tests {
 
         // Then: no sync is requested from open
         assert!(ds.take_refreshes().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod auto_refresh_current_folder_tests {
+    use super::*;
+    use crate::data::InMemoryDataSource;
+    use std::sync::Arc;
+
+    #[test]
+    fn auto_refresh_requests_current_folder_only() {
+        // Given: sample app with auto-refresh interval elapsed
+        let ds = InMemoryDataSource::sample();
+        let mut a = App::new(Arc::new(ds.clone()));
+        a.settings.auto_refresh_secs = 1;
+        a.last_auto_refresh_tick = 0;
+        a.ticks = 4; // 1s * 4 ticks/sec
+        let acc_id = a.accounts[0].account.id;
+        let folder_id = a.accounts[0].folders[a.sidebar_folder_idx].id;
+        let _ = ds.take_refreshes();
+
+        // When: tick fires auto-refresh
+        a.tick();
+
+        // Then: only the current folder is refreshed (not SyncAll)
+        assert_eq!(
+            ds.take_refreshes(),
+            vec![(Some(acc_id), Some(folder_id))]
+        );
     }
 }

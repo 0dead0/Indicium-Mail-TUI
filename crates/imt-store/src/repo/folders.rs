@@ -85,7 +85,7 @@ impl<'a> FolderRepo<'a> {
         Ok(())
     }
 
-    /// Whether this folder has had its one-time full attachment scan.
+    /// Whether this folder has had its one-time attachment-flag window scan.
     pub async fn attachments_scanned(&self, id: FolderId) -> Result<bool> {
         let id_bytes = uuid_bytes(&id.0);
         let row = sqlx::query("SELECT scanned FROM folder_attachment_scan WHERE folder_id = ?1")
@@ -95,7 +95,7 @@ impl<'a> FolderRepo<'a> {
         Ok(row.map(|r| r.get::<i64, _>("scanned") != 0).unwrap_or(false))
     }
 
-    /// Mark this folder's one-time full attachment scan as done.
+    /// Mark this folder's one-time attachment-flag window scan as done.
     pub async fn mark_attachments_scanned(&self, id: FolderId) -> Result<()> {
         let id_bytes = uuid_bytes(&id.0);
         sqlx::query(
@@ -108,9 +108,13 @@ impl<'a> FolderRepo<'a> {
         Ok(())
     }
 
-    /// Delete a folder by id.
+    /// Delete a folder by id (and attachment-scan side rows).
     pub async fn delete(&self, id: FolderId) -> Result<()> {
         let id_bytes = uuid_bytes(&id.0);
+        sqlx::query("DELETE FROM folder_attachment_scan WHERE folder_id = ?1")
+            .bind(&id_bytes)
+            .execute(self.0)
+            .await?;
         sqlx::query("DELETE FROM folders WHERE id = ?1")
             .bind(&id_bytes)
             .execute(self.0)

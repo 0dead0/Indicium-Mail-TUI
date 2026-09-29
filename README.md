@@ -64,7 +64,7 @@ A keyboard-driven terminal email client built in Rust. Reads and sends mail over
 
 **Other**
 - SQLite local cache with WAL mode - fast reads, no corruption on crash
-- Configurable auto-refresh interval; IDLE push always active
+- Configurable auto-refresh interval (current folder only); IDLE push always active
 - Toast notifications for async events (sync errors, account added, mail moved)
 - File picker for attaching files in compose (`Ctrl-A`)
 - Theming support

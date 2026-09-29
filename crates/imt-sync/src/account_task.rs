@@ -163,7 +163,8 @@ async fn run_once(ctx: &AccountTaskCtx) -> std::result::Result<(), SyncErrorReas
     let folders = sync_folder_list(ctx, &mut backend).await?;
 
     // Connect: sync primary (Inbox) only, then IDLE. Other folders sync on
-    // demand when opened while stale, or via SyncAll / auto-refresh.
+    // demand when opened while stale, or via current-folder refresh / SyncAccount
+    // (bulk polls skip All Mail).
     let primary = primary_folder_for_sync(&folders);
     if let Some(f) = primary {
         if ctx.cancel.notified_now() {
@@ -245,7 +246,9 @@ async fn sync_folder_list<B: MailBackend>(
         existing.iter().map(|f| (f.path.clone(), f)).collect();
 
     let mut out = Vec::with_capacity(infos.len());
+    let mut listed_paths = std::collections::HashSet::with_capacity(infos.len());
     for info in &infos {
+        listed_paths.insert(info.path.clone());
         let prev = by_path.get(&info.path).copied();
         let id = prev.map(|f| f.id).unwrap_or_else(FolderId::new);
         let folder = to_folder(ctx.account.id, id, info, prev);
@@ -254,6 +257,21 @@ async fn sync_folder_list<B: MailBackend>(
             .await
             .map_err(|e| SyncErrorReason::Other(format!("upsert folder: {}", e)))?;
         out.push(folder);
+    }
+
+    // Drop leftover rows (e.g. bare [Gmail]) no longer returned by LIST / never selectable.
+    for old in &existing {
+        if imt_net::should_retain_stored_folder(&old.path, &listed_paths) {
+            continue;
+        }
+        if let Err(e) = folder_repo.delete(old.id).await {
+            warn!(
+                target: "imt-sync::account_task",
+                path = %old.path,
+                "prune non-listed folder: {}",
+                e
+            );
+        }
     }
 
     let _ = ctx.tx.send(SyncEvent::FolderListUpdated {

@@ -390,13 +390,14 @@ pub async fn command_worker(
                 }
             }
             Command::SyncAccount { account } => {
-                let folder_ids = snapshot.read(|s| {
-                    s.folders_by_account.get(&account)
-                        .map(|fs| fs.iter().map(|f| f.id).collect::<Vec<_>>())
+                let folders = snapshot.read(|s| {
+                    s.folders_by_account
+                        .get(&account)
+                        .cloned()
                         .unwrap_or_default()
                 });
-                for fid in folder_ids {
-                    if let Err(e) = engine.sync_folder(account, fid).await {
+                for f in folders.into_iter().filter(|f| imt_net::is_bulk_sync_folder(&f.path)) {
+                    if let Err(e) = engine.sync_folder(account, f.id).await {
                         snapshot.push_notification(format!("Sync failed: {}", e));
                     }
                 }
@@ -414,13 +415,17 @@ pub async fn command_worker(
                 }
             }
             Command::SyncAll => {
-                let pairs = snapshot.read(|s| {
-                    s.folders_by_account.iter()
-                        .flat_map(|(aid, fs)| fs.iter().map(move |f| (*aid, f.id)))
+                let folders = snapshot.read(|s| {
+                    s.folders_by_account
+                        .iter()
+                        .flat_map(|(aid, fs)| fs.iter().map(move |f| (*aid, f.clone())))
                         .collect::<Vec<_>>()
                 });
-                for (aid, fid) in pairs {
-                    if let Err(e) = engine.sync_folder(aid, fid).await {
+                for (aid, f) in folders
+                    .into_iter()
+                    .filter(|(_, f)| imt_net::is_bulk_sync_folder(&f.path))
+                {
+                    if let Err(e) = engine.sync_folder(aid, f.id).await {
                         snapshot.push_notification(format!("Sync failed: {}", e));
                     }
                 }

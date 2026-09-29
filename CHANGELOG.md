@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Auto-refresh and SyncAll no longer poll every folder.** Auto-refresh syncs only the **current** folder. `SyncAccount` / `SyncAll` skip `\Noselect` / bare `[Gmail]` and Gmail All Mail (open that folder to sync it on demand). Avoids Gmail-scale freezes from a 60s full-tree poll.
+- **Folder LIST prunes leftover DB rows** (e.g. bare `[Gmail]`) that are no longer listed or are non-selectable, so they leave the sidebar.
+
 ### Added
 - **Keyboard expand/collapse for sidebar accounts.** Account headers are selectable with `j`/`k`. `Enter` or `→` expands a collapsed account; `Enter` or `←` collapses an expanded one. On a folder, `Enter`/`→` focuses the message list; `←` selects the parent account. `←`/`→` also move focus Sidebar ↔ List ↔ Reader (alongside Tab).
 

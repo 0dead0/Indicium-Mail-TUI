@@ -32,19 +32,19 @@ so that the client becomes usable quickly and does not look frozen on Gmail-scal
 - Given the user opens a non-inbox folder that is **stale**, When that happens, Then that folder is synced on demand.
 - Given the user opens a folder that is **not** stale, When that happens, Then no sync is triggered from open.
 - Given folders not yet visited, When viewing the sidebar, Then they still appear from LIST/STATUS (or cached metadata) without implying a completed envelope sync.
-- Given auto-refresh / SyncAll, When it fires, Then **all** folders are synced (unchanged from today).
+- Given auto-refresh / SyncAll, When it fires, Then **current-folder / bulk-safe** sync runs (see `sync-refresh-current-folder` — **departure:** no longer full SyncAll of every folder).
 
 ## Product choices (recorded)
 
 - **Primary at connect:** Inbox only (role `Inbox`, else first folder). **Sent stays on-demand** — not primary.
 - **Open → sync only when stale.** Stale = local `uid_next == 0` (never envelope-synced). `uid_validity` mismatch is handled inside an actual sync (`sync_one_folder` / SyncFolder / SyncAll), not as an open-time predicate without SELECT.
-- **Auto-refresh always SyncAll** — do not narrow to current folder.
+- **Auto-refresh always SyncAll** — **departed** → current folder only (`sync-refresh-current-folder`).
 
 ## Suggested approach
 
 - Split startup: sync primary folder → IDLE; defer the rest.
 - On folder open: if stale, call `refresh(account, folder)` → `SyncFolder` (second connection OK for occasional opens).
-- Ctrl-R / SyncAll paths unchanged.
+- Ctrl-R refreshes current folder/account; SyncAll skips All Mail (see `sync-refresh-current-folder`).
 - Preserve incremental `uid_next` behavior once a folder has been synced once.
 - Status line should show which folder is syncing when deferred work runs.
 
@@ -52,7 +52,7 @@ so that the client becomes usable quickly and does not look frozen on Gmail-scal
 
 - `primary_folder_for_sync` + connect loop in `account_task.rs` (Inbox only → IDLE).
 - `Folder::is_stale()` (`uid_next == 0`) in `imt-core`.
-- TUI `open_selected_folder` on sidebar/mouse/account cycle; SyncAll / Ctrl-R unchanged.
+- TUI `open_selected_folder` on sidebar/mouse/account cycle; refresh narrowed in `sync-refresh-current-folder`.
 - Tests: `imt-core` stale, `imt-sync` primary selection, `imt-tui` stale/fresh open.
 
 ## Out of scope

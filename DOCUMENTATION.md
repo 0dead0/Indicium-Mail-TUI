@@ -65,9 +65,11 @@ Event-driven sync engine.
 - `SyncEngine` owns per-account async workers, each:
   1. calls `ensure_fresh_tokens()` to refresh OAuth2 access tokens if within 60 seconds of expiry
   2. connects (emits `AccountConnecting`/`AccountConnected`)
-  3. lists folders, persists, emits `FolderListUpdated`
-  4. for each folder: select, fetch envelopes for new UIDs, persist, emit `MessageAdded`. The first sync of each folder forces a full UID rescan (regardless of `last_uid_next`) so messages that pre-date attachment detection get `has_attachments` set from `BODYSTRUCTURE`; the folder is then marked scanned in `folder_attachment_scan`. Neither sync path deletes local rows for messages that have vanished from the server.
-  5. enters IDLE on the inbox; on `EXISTS`/`EXPUNGE`/`FETCH` re-syncs and re-enters
+  3. lists folders (skips IMAP `\Noselect` / bare `[Gmail]`), persists, **prunes** stored folders missing from LIST or non-selectable, emits `FolderListUpdated`
+  4. envelope-syncs the **primary folder only** (Inbox role, else first folder) then enters IDLE. Other folders sync on demand when opened while stale (`uid_next == 0`), via current-folder refresh / auto-refresh, or SyncAccount (bulk polls skip All Mail).
+  5. First sync / attachment scan / uidvalidity resync fetch only a **recent UID window** (`INITIAL_SYNC_UID_WINDOW`, default 500), not full history. Incremental sync uses `uid_next` as the forward tip. Neither sync path deletes local rows for messages that have vanished from the server.
+  6. on IDLE `EXISTS`/`EXPUNGE`/`FETCH`: re-syncs the inbox and re-enters IDLE
+- Auto-refresh (TUI setting, default 60s) syncs **only the current folder**, not the whole tree.
 - Exponential backoff (5s -> 5min) on connection errors
 - `password.rs`: `imap_provider_for(&account)` and `smtp_provider_for(&account)` return auth-method-aware `PasswordProvider` closures (load `imap_password` for password accounts, `oauth_access_token` for OAuth2 accounts); `ensure_fresh_tokens()` handles silent token refresh - missing or malformed `oauth_access_expiry` is treated as expired (forces refresh); a missing refresh token returns an explicit `"please re-authenticate the account"` error.
 - `move_message`: on server move success but DB delete failure, the error propagates to the caller and a `SyncFinished` event is emitted to schedule reconciliation. After a successful move, recomputes total/unread counts for both the source and destination folder from the local message table, persists them via `FolderRepo::update_counts`, and emits `FolderCountsChanged` for each so the sidebar reflects the move in every folder immediately (not only the one currently loaded).
