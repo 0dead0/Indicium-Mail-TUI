@@ -2605,8 +2605,11 @@ impl App {
                 self.sidebar_on_account = false;
                 self.sidebar_folder_idx = prev.folders.len() - 1;
                 self.open_selected_folder();
+            } else {
+                // Previous account header: align list with that account's first folder.
+                self.sidebar_folder_idx = 0;
+                self.open_selected_folder();
             }
-            // else stay on previous account header; leave message list alone
             return;
         }
         if self.sidebar_folder_idx > 0 {
@@ -2636,6 +2639,8 @@ impl App {
             } else if self.sidebar_account_idx + 1 < self.accounts.len() {
                 self.sidebar_account_idx += 1;
                 self.sidebar_on_account = true;
+                self.sidebar_folder_idx = 0;
+                self.open_selected_folder();
             }
             return;
         }
@@ -2650,6 +2655,8 @@ impl App {
         } else if self.sidebar_account_idx + 1 < self.accounts.len() {
             self.sidebar_account_idx += 1;
             self.sidebar_on_account = true;
+            self.sidebar_folder_idx = 0;
+            self.open_selected_folder();
         }
     }
 
@@ -3217,6 +3224,32 @@ mod sidebar_nav_tests {
         assert!(a.sidebar_on_account);
     }
 
+    #[test]
+    fn jk_to_other_account_header_keeps_message_list_in_sync() {
+        // Given: Personal inbox loaded, then focus on that account header (collapsed)
+        let mut a = app();
+        a.focus = Focus::Sidebar;
+        a.sidebar_account_idx = 0;
+        a.sidebar_folder_idx = 0;
+        a.sidebar_on_account = false;
+        a.refresh_messages();
+        assert!(!a.messages.is_empty(), "sample Personal inbox needs messages");
+        let personal_ids: Vec<_> = a.messages.iter().map(|m| m.id).collect();
+        a.accounts[0].expanded = false;
+        a.sidebar_on_account = true;
+
+        // When: j moves to the next account header
+        a.dispatch(KeyAction::Down);
+
+        // Then: cursor is on Work header and list matches current_folder (not stale Personal)
+        assert_eq!(a.sidebar_account_idx, 1);
+        assert!(a.sidebar_on_account);
+        let folder_id = a.current_folder().expect("folder under new account").id;
+        let expected: Vec<_> = a.data.messages(folder_id).into_iter().map(|m| m.id).collect();
+        let actual: Vec<_> = a.messages.iter().map(|m| m.id).collect();
+        assert_eq!(actual, expected);
+        assert_ne!(actual, personal_ids);
+    }
 }
 
 #[cfg(test)]

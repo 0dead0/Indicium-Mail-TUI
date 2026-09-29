@@ -1,14 +1,15 @@
 ---
 id: "sidebar-account-keyboard"
-status: "in-progress"
+status: "ops"
 priority: "medium"
 assignee: null
 epic: null
 dueDate: null
 created: "2026-09-27T18:19:00.000Z"
-modified: "2026-09-27T18:30:00.000Z"
+modified: "2026-09-29T08:55:30.430Z"
+completedAt: null
 labels: []
-order: "a1"
+order: "a0"
 ---
 # User can expand accounts and move panes with keyboard
 
@@ -37,7 +38,13 @@ so that I can unfold folders and move between panes without the mouse.
 
 ## Tests
 
-Unit tests in `app::sidebar_nav_tests` (9 cases). `cargo test -p imt-tui --lib` green (17).
+Unit tests in `app::sidebar_nav_tests` (10 cases), including
+`jk_to_other_account_header_keeps_message_list_in_sync` (list stays aligned when `j`/`k` lands on another account header).
+`cargo test -p imt-tui --lib` green.
+
+## Bugfix (review)
+
+Landing on another account header via `j`/`k` left `messages` stale while `current_folder()` already pointed at the new account. Fix: reset `sidebar_folder_idx` to 0 and call `refresh_messages()` whenever sidebar nav changes account onto a header.
 
 ## Docs
 
