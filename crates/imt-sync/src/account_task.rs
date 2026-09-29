@@ -16,13 +16,18 @@ use imt_net::backend::{EnvelopeFetch, FolderInfo, IdleEvent, MailBackend};
 use imt_net::ImapBackend;
 use imt_store::{Db, FolderRepo, MessageRepo};
 
+use crate::backfill::{
+    may_backfill_in_phase, pick_backfill_folder, seed_backfill_cursor_if_needed, SyncPhase,
+};
 use crate::password::{ensure_fresh_tokens, imap_provider_for};
 use crate::snippet::make_snippet;
-use crate::uid_window::{envelope_sync_range, INITIAL_SYNC_UID_WINDOW};
+use crate::uid_window::{backfill_chunk, envelope_sync_range, INITIAL_SYNC_UID_WINDOW};
 
 const SNIPPET_MAX: usize = 256;
 const BACKOFF_INITIAL_SECS: u64 = 5;
 const BACKOFF_MAX_SECS: u64 = 300;
+/// Quiet IDLE time before attempting one historical backfill chunk.
+const BACKFILL_IDLE_SECS: u64 = 45;
 
 /// Convert `imt_net::FolderInfo` into `imt_core::Folder`, preserving any
 /// existing `uid_next` / counts so we don't blindly trust the LIST
@@ -224,6 +229,21 @@ async fn run_once(ctx: &AccountTaskCtx) -> std::result::Result<(), SyncErrorReas
                     }
                 }
             }
+            _ = tokio::time::sleep(Duration::from_secs(BACKFILL_IDLE_SECS)) => {
+                debug_assert!(may_backfill_in_phase(SyncPhase::IdleQuiet));
+                let _ = idle.done().await;
+                if let Err(e) = run_one_backfill_chunk(ctx, &mut backend, &inbox_path).await {
+                    warn!(target: "imt-sync::account_task", "backfill: {}", e);
+                    let _ = ctx.tx.send(SyncEvent::Error {
+                        account_id: Some(ctx.account.id),
+                        message: format!("backfill: {}", e),
+                    });
+                }
+                idle = backend
+                    .idle(&inbox_path)
+                    .await
+                    .map_err(|e| SyncErrorReason::Other(format!("idle re-enter: {}", e)))?;
+            }
         }
     }
 }
@@ -311,8 +331,8 @@ async fn sync_one_folder<B: MailBackend>(
         .map(|s| s.uid_validity != 0 && s.uid_validity != state.uid_validity)
         .unwrap_or(false);
 
-    // One-time full rescan so messages synced before attachment detection get
-    // their has_attachments flag set from BODYSTRUCTURE.
+    // One-time attachment flag pass: uses the same recent-UID window as first
+    // sync (not a full-history fetch). See `envelope_sync_range`.
     let need_attachment_scan = !folder_repo
         .attachments_scanned(folder.id)
         .await
@@ -341,6 +361,17 @@ async fn sync_one_folder<B: MailBackend>(
         if need_attachment_scan {
             let _ = folder_repo.mark_attachments_scanned(folder.id).await;
         }
+        let msg_repo = MessageRepo::new(ctx.db.pool());
+        let _ = seed_backfill_cursor_if_needed(
+            &folder_repo,
+            &msg_repo,
+            folder.id,
+            last_uid_next,
+            state.uid_next,
+            needs_full_resync,
+            INITIAL_SYNC_UID_WINDOW,
+        )
+        .await;
         let _ = ctx.tx.send(SyncEvent::FolderCountsChanged {
             folder_id: folder.id,
             total: state.exists,
@@ -399,6 +430,7 @@ async fn sync_one_folder<B: MailBackend>(
         let _ = ctx.tx.send(SyncEvent::MessageAdded {
             folder_id: folder.id,
             message_id: new_id,
+            notify: true,
         });
     }
 
@@ -416,6 +448,16 @@ async fn sync_one_folder<B: MailBackend>(
     if need_attachment_scan {
         let _ = folder_repo.mark_attachments_scanned(folder.id).await;
     }
+    let _ = seed_backfill_cursor_if_needed(
+        &folder_repo,
+        &msg_repo,
+        folder.id,
+        last_uid_next,
+        state.uid_next,
+        needs_full_resync,
+        INITIAL_SYNC_UID_WINDOW,
+    )
+    .await;
     let _ = ctx.tx.send(SyncEvent::FolderCountsChanged {
         folder_id: folder.id,
         total: state.exists,
@@ -424,6 +466,123 @@ async fn sync_one_folder<B: MailBackend>(
     let _ = ctx.tx.send(SyncEvent::SyncFinished {
         account_id: ctx.account.id,
         folder_id: Some(folder.id),
+    });
+    Ok(())
+}
+
+/// One historical backfill chunk while IDLE is quiet (does not move `uid_next`).
+async fn run_one_backfill_chunk<B: MailBackend>(
+    ctx: &AccountTaskCtx,
+    backend: &mut B,
+    idle_folder_path: &str,
+) -> std::result::Result<(), SyncErrorReason> {
+    let folder_repo = FolderRepo::new(ctx.db.pool());
+    let msg_repo = MessageRepo::new(ctx.db.pool());
+    let folders = folder_repo
+        .list_by_account(ctx.account.id)
+        .await
+        .map_err(|e| SyncErrorReason::Other(format!("list folders (db): {}", e)))?;
+
+    for f in &folders {
+        if f.uid_next == 0 || !should_envelope_sync(f) {
+            continue;
+        }
+        if folder_repo.backfill_low(f.id).await.ok().flatten().is_some() {
+            continue;
+        }
+        let _ = seed_backfill_cursor_if_needed(
+            &folder_repo,
+            &msg_repo,
+            f.id,
+            f.uid_next,
+            f.uid_next,
+            false,
+            INITIAL_SYNC_UID_WINDOW,
+        )
+        .await;
+    }
+
+    let mut lows: HashMap<FolderId, u32> = HashMap::new();
+    for f in &folders {
+        if let Ok(Some(low)) = folder_repo.backfill_low(f.id).await {
+            lows.insert(f.id, low);
+        }
+    }
+
+    let Some(target) = pick_backfill_folder(&folders, |id| lows.get(&id).copied(), Some(idle_folder_path))
+    else {
+        return Ok(());
+    };
+    let Some(&low) = lows.get(&target.id) else {
+        return Ok(());
+    };
+    let Some(chunk) = backfill_chunk(low, INITIAL_SYNC_UID_WINDOW) else {
+        return Ok(());
+    };
+
+    let _ = ctx.tx.send(SyncEvent::SyncStarted {
+        account_id: ctx.account.id,
+        folder_id: Some(target.id),
+    });
+
+    info!(
+        target: "imt-sync::account_task",
+        folder = %target.path,
+        range = ?chunk.range,
+        backfill_low = low,
+        "backfill chunk"
+    );
+
+    let state = backend
+        .select_folder(&target.path)
+        .await
+        .map_err(|e| SyncErrorReason::Other(format!("backfill select {}: {}", target.path, e)))?;
+
+    let envelopes = backend
+        .fetch_envelopes(&target.path, chunk.range)
+        .await
+        .map_err(|e| SyncErrorReason::Other(format!("backfill fetch: {}", e)))?;
+
+    for env in envelopes {
+        let existing = msg_repo.get_by_uid(target.id, Uid(env.uid)).await.ok();
+        let message = match existing {
+            Some(mut m) => {
+                m.flags = env.flags.clone();
+                m.headers = env.headers.clone();
+                m.size = env.size;
+                m.internal_date = env.internal_date;
+                m.has_attachments = m.has_attachments || env.has_attachments;
+                m
+            }
+            None => to_message(ctx.account.id, target.id, env),
+        };
+        let new_id = message.id;
+        msg_repo
+            .upsert_envelope(&message)
+            .await
+            .map_err(|e| SyncErrorReason::Other(format!("backfill upsert: {}", e)))?;
+        let _ = ctx.tx.send(SyncEvent::MessageAdded {
+            folder_id: target.id,
+            message_id: new_id,
+            notify: false,
+        });
+    }
+
+    folder_repo
+        .set_backfill_low(target.id, chunk.new_backfill_low)
+        .await
+        .map_err(|e| SyncErrorReason::Other(format!("set backfill_low: {}", e)))?;
+    let _ = folder_repo
+        .update_counts(target.id, state.exists, state.unseen)
+        .await;
+    let _ = ctx.tx.send(SyncEvent::FolderCountsChanged {
+        folder_id: target.id,
+        total: state.exists,
+        unread: state.unseen,
+    });
+    let _ = ctx.tx.send(SyncEvent::SyncFinished {
+        account_id: ctx.account.id,
+        folder_id: Some(target.id),
     });
     Ok(())
 }

@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Keyboard expand/collapse for sidebar accounts.** Account headers are selectable with `j`/`k`. `Enter` or `→` expands a collapsed account; `Enter` or `←` collapses an expanded one. On a folder, `Enter`/`→` focuses the message list; `←` selects the parent account. `←`/`→` also move focus Sidebar ↔ List ↔ Reader (alongside Tab).
+- **Background UID backfill after the recent-window first sync.** Older envelopes fill in in 500-UID chunks during quiet IDLE without changing the forward `uid_next` cursor. Cursor stored in `folder_backfill` (migration `0007`). Existing folders that already have local UID 1 are marked complete. Gmail All Mail is not auto-backfilled; `\Noselect` folders are never selected.
+
+### Fixed
+- **UID backfill no longer fires “New mail” toasts** for historical unread envelopes; list still refreshes. UIDVALIDITY changes reseed `backfill_low`. Empty local folders are no longer marked backfill-complete.
 
 ## [0.3.0] - 2026-06-23
 

@@ -17,6 +17,7 @@ use imt_net::{build_rfc822, ImapBackend, SmtpSender};
 use imt_store::{secrets, AccountRepo, Db, DraftRepo, FolderRepo, MessageRepo};
 
 use crate::account_task::{run as run_account_task, AccountTaskCtx};
+use crate::backfill::seed_backfill_cursor_if_needed;
 use crate::error::{Result, SyncError};
 use crate::password::{delete_all, imap_provider_for, smtp_provider_for, store_password};
 use crate::uid_window::{envelope_sync_range, INITIAL_SYNC_UID_WINDOW};
@@ -162,6 +163,17 @@ impl SyncEngine {
             if need_attachment_scan {
                 let _ = folder_repo.mark_attachments_scanned(folder_id).await;
             }
+            let msg_repo = MessageRepo::new(self.db.pool());
+            let _ = seed_backfill_cursor_if_needed(
+                &folder_repo,
+                &msg_repo,
+                folder_id,
+                last_uid_next,
+                state.uid_next,
+                needs_full_resync,
+                INITIAL_SYNC_UID_WINDOW,
+            )
+            .await;
             let _ = self.tx.send(SyncEvent::FolderCountsChanged {
                 folder_id,
                 total: state.exists,
@@ -213,6 +225,7 @@ impl SyncEngine {
             let _ = self.tx.send(SyncEvent::MessageAdded {
                 folder_id,
                 message_id: id,
+                notify: true,
             });
         }
 
@@ -228,6 +241,16 @@ impl SyncEngine {
         if need_attachment_scan {
             let _ = folder_repo.mark_attachments_scanned(folder_id).await;
         }
+        let _ = seed_backfill_cursor_if_needed(
+            &folder_repo,
+            &msg_repo,
+            folder_id,
+            last_uid_next,
+            state.uid_next,
+            needs_full_resync,
+            INITIAL_SYNC_UID_WINDOW,
+        )
+        .await;
         let _ = self.tx.send(SyncEvent::FolderCountsChanged {
             folder_id,
             total: state.exists,

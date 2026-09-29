@@ -42,9 +42,9 @@ Pure data types: `Account`, `Folder`, `Message`, `Thread`, `Draft`, `Address`, `
 SQLite persistence layer (sqlx + migrations).
 
 - WAL journal mode, foreign keys on, 5s busy timeout
-- Tables: `accounts`, `folders`, `messages`, `threads`, `drafts`, `folder_attachment_scan` + FTS5 `messages_fts`
+- Tables: `accounts`, `folders`, `messages`, `threads`, `drafts`, `folder_attachment_scan`, `folder_backfill` + FTS5 `messages_fts`
 - Repos: `AccountRepo`, `FolderRepo`, `MessageRepo`, `DraftRepo`, `SearchRepo`
-- Migrations (applied in lexical order, recorded idempotently): `idx_messages_folder_date` on `(folder_id, internal_date DESC)` + FTS5 triggers (0001-0003), `messages.has_attachments` column (0004), `folder_attachment_scan` table tracking the one-time per-folder attachment rescan (0005), `accounts.keep_on_server` column defaulting to 1 (0006)
+- Migrations (applied in lexical order, recorded idempotently): `idx_messages_folder_date` on `(folder_id, internal_date DESC)` + FTS5 triggers (0001-0003), `messages.has_attachments` column (0004), `folder_attachment_scan` table tracking the one-time per-folder attachment rescan (0005), `accounts.keep_on_server` column defaulting to 1 (0006), `folder_backfill` backward UID cursor with seed for folders whose local `MIN(uid) <= 1` (0007)
 - `secrets` module: file storage at `~/.local/share/indicium-mail-tui/secrets/<id>:<kind>` (0600). Set `IMT_USE_KEYRING=1` to route through the OS keyring instead. Keys stored per account: `imap_password`, `smtp_password`, `oauth_access_token`, `oauth_access_expiry`, `oauth_refresh_token`, `oauth_client_secret`.
 
 ### `imt-net`
@@ -68,7 +68,8 @@ Event-driven sync engine.
   3. lists folders (skips IMAP `\Noselect` / bare `[Gmail]`), persists, **prunes** stored folders missing from LIST or non-selectable, emits `FolderListUpdated`
   4. envelope-syncs the **primary folder only** (Inbox role, else first folder) then enters IDLE. Other folders sync on demand when opened while stale (`uid_next == 0`), via current-folder refresh / auto-refresh, or SyncAccount (bulk polls skip All Mail).
   5. First sync / attachment scan / uidvalidity resync fetch only a **recent UID window** (`INITIAL_SYNC_UID_WINDOW`, default 500), not full history. Incremental sync uses `uid_next` as the forward tip. Neither sync path deletes local rows for messages that have vanished from the server.
-  6. on IDLE `EXISTS`/`EXPUNGE`/`FETCH`: re-syncs the inbox and re-enters IDLE
+  6. After quiet IDLE (~45s), runs **one historical backfill chunk** (older UIDs below `folder_backfill.backfill_low`) without moving `uid_next`. Priority: IDLE folder → Inbox → others; Gmail All Mail is skipped by default. `\Noselect` paths are never selected.
+  7. on IDLE `EXISTS`/`EXPUNGE`/`FETCH`: re-syncs the inbox and re-enters IDLE
 - Auto-refresh (TUI setting, default 60s) syncs **only the current folder**, not the whole tree.
 - Exponential backoff (5s -> 5min) on connection errors
 - `password.rs`: `imap_provider_for(&account)` and `smtp_provider_for(&account)` return auth-method-aware `PasswordProvider` closures (load `imap_password` for password accounts, `oauth_access_token` for OAuth2 accounts); `ensure_fresh_tokens()` handles silent token refresh - missing or malformed `oauth_access_expiry` is treated as expired (forces refresh); a missing refresh token returns an explicit `"please re-authenticate the account"` error.
@@ -121,7 +122,7 @@ TUI calls a sync `DataSource` method -> `SyncDataSource` reads from `Snapshot` (
 TUI calls a write method (e.g. `send`) -> `SyncDataSource` posts a `Command` on an unbounded mpsc -> `command_worker` invokes `SyncEngine` -> engine talks to IMAP/SMTP -> emits `SyncEvent` on completion -> snapshot updater task writes back to snapshot -> next `App::tick()` picks it up -> UI re-renders.
 
 ### New mail (server -> TUI)
-IMAP IDLE delivers `EXISTS` -> account_task ends IDLE, re-syncs the folder, emits `MessageAdded` -> snapshot updater inserts message rows -> next tick the TUI sees a new message in the snapshot and re-renders. No user interaction needed.
+IMAP IDLE delivers `EXISTS` -> account_task ends IDLE, re-syncs the folder, emits `MessageAdded` (`notify: true`) -> snapshot updater inserts message rows and may toast inbox unread -> next tick the TUI sees a new message in the snapshot and re-renders. Historical backfill also emits `MessageAdded` but with `notify: false` so the list refreshes without "New mail" toasts.
 
 ### OAuth2 add-account flow
 1. User fills the onboarding form with Client ID, tabs to Auth Code

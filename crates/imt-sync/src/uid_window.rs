@@ -18,6 +18,38 @@ pub fn recent_uid_window(server_uid_next: u32, window: u32) -> Option<(u32, u32)
     Some((start, end))
 }
 
+/// One historical backfill step: IMAP range to fetch and the new `backfill_low`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackfillChunk {
+    pub range: UidRange,
+    pub new_backfill_low: u32,
+}
+
+/// Next older UID chunk below `backfill_low`, or `None` when history is complete.
+///
+/// `backfill_low` is the lowest UID already fetched. A chunk covers up to `window`
+/// UIDs immediately below it: `[max(1, backfill_low - window) .. backfill_low - 1]`.
+pub fn backfill_chunk(backfill_low: u32, window: u32) -> Option<BackfillChunk> {
+    if backfill_low <= 1 || window == 0 {
+        return None;
+    }
+    let end = backfill_low - 1;
+    let start = end.saturating_sub(window.saturating_sub(1)).max(1);
+    Some(BackfillChunk {
+        range: UidRange::Range(start, end),
+        new_backfill_low: start,
+    })
+}
+
+/// `backfill_low` after a first recent-UID pass for `server_uid_next`.
+///
+/// Empty folders are already complete (`1`).
+pub fn seed_backfill_low(server_uid_next: u32, window: u32) -> u32 {
+    recent_uid_window(server_uid_next, window)
+        .map(|(start, _)| start)
+        .unwrap_or(1)
+}
+
 /// Decide which UID range to fetch for a folder sync pass.
 ///
 /// - First sync / uidvalidity resync → recent window (not full history).
@@ -157,5 +189,76 @@ mod tests {
             envelope_sync_range(10_001, 10_001, true, false, 500),
             Some(UidRange::Range(9_501, 10_000))
         );
+    }
+
+    #[test]
+    fn backfill_chunk_fetches_next_older_window() {
+        // Given: folder with uid_next at tip and backfill_low = 9501, N = 500
+        let backfill_low = 9_501;
+        let n = 500;
+
+        // When: next backfill range is computed
+        let step = backfill_chunk(backfill_low, n);
+
+        // Then: Range(9001, 9500) and backfill_low becomes 9001 after the chunk
+        assert_eq!(
+            step,
+            Some(BackfillChunk {
+                range: UidRange::Range(9_001, 9_500),
+                new_backfill_low: 9_001,
+            })
+        );
+    }
+
+    #[test]
+    fn backfill_final_chunk_clamps_to_uid_one() {
+        // Given: backfill_low = 200, N = 500
+        // When: next backfill range is computed
+        let step = backfill_chunk(200, 500);
+
+        // Then: Range(1, 199) and afterward backfill is complete (backfill_low <= 1)
+        assert_eq!(
+            step,
+            Some(BackfillChunk {
+                range: UidRange::Range(1, 199),
+                new_backfill_low: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn backfill_complete_requests_nothing() {
+        // Given: backfill_low <= 1
+        // When: next backfill range is computed
+        // Then: no IMAP fetch range
+        assert_eq!(backfill_chunk(1, 500), None);
+        assert_eq!(backfill_chunk(0, 500), None);
+    }
+
+    #[test]
+    fn first_window_sync_seeds_backfill_low() {
+        // Given: never-synced folder, server uid_next = 10001, window = 500
+        let server_uid_next = 10_001;
+        let window = 500;
+
+        // When: first envelope sync finishes (seed from window)
+        let low = seed_backfill_low(server_uid_next, window);
+
+        // Then: uid_next tip is caller's job; backfill_low = 9501
+        assert_eq!(low, 9_501);
+        assert_eq!(
+            recent_uid_window(server_uid_next, window).map(|(s, _)| s),
+            Some(9_501)
+        );
+    }
+
+    #[test]
+    fn incremental_new_mail_ignores_backfill_cursor() {
+        // Given: uid_next = 10001, backfill_low = 9001 (unused here), server tip 10005
+        // When: normal envelope sync range is chosen
+        let range = envelope_sync_range(10_001, 10_005, false, false, 500);
+
+        // Then: only new UIDs (forward cursor); backfill_low does not participate
+        assert_eq!(range, Some(UidRange::Range(10_001, 10_004)));
     }
 }

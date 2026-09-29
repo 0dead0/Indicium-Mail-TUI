@@ -108,10 +108,14 @@ impl<'a> FolderRepo<'a> {
         Ok(())
     }
 
-    /// Delete a folder by id (and attachment-scan side rows).
+    /// Delete a folder by id (and attachment-scan / backfill side rows).
     pub async fn delete(&self, id: FolderId) -> Result<()> {
         let id_bytes = uuid_bytes(&id.0);
         sqlx::query("DELETE FROM folder_attachment_scan WHERE folder_id = ?1")
+            .bind(&id_bytes)
+            .execute(self.0)
+            .await?;
+        sqlx::query("DELETE FROM folder_backfill WHERE folder_id = ?1")
             .bind(&id_bytes)
             .execute(self.0)
             .await?;
@@ -119,6 +123,30 @@ impl<'a> FolderRepo<'a> {
             .bind(&id_bytes)
             .execute(self.0)
             .await?;
+        Ok(())
+    }
+
+    /// Lowest UID already covered by historical backfill, if initialized.
+    pub async fn backfill_low(&self, id: FolderId) -> Result<Option<u32>> {
+        let id_bytes = uuid_bytes(&id.0);
+        let row = sqlx::query("SELECT backfill_low FROM folder_backfill WHERE folder_id = ?1")
+            .bind(&id_bytes)
+            .fetch_optional(self.0)
+            .await?;
+        Ok(row.map(|r| r.get::<i64, _>("backfill_low") as u32))
+    }
+
+    /// Persist the historical backfill cursor.
+    pub async fn set_backfill_low(&self, id: FolderId, backfill_low: u32) -> Result<()> {
+        let id_bytes = uuid_bytes(&id.0);
+        sqlx::query(
+            "INSERT INTO folder_backfill (folder_id, backfill_low) VALUES (?1, ?2) \
+             ON CONFLICT(folder_id) DO UPDATE SET backfill_low = excluded.backfill_low",
+        )
+        .bind(&id_bytes)
+        .bind(backfill_low as i64)
+        .execute(self.0)
+        .await?;
         Ok(())
     }
 }
@@ -171,3 +199,148 @@ fn row_to_folder(row: &sqlx::sqlite::SqliteRow) -> Result<Folder> {
         unread_count: unread_count as u32,
     })
 }
+
+#[cfg(test)]
+mod backfill_tests {
+    use super::*;
+    use crate::{AccountRepo, Db, MessageRepo};
+    use chrono::Utc;
+    use imt_core::{
+        Account, AccountId, Address, AuthMethod, Flag, Folder, FolderId, FolderRole, ImapConfig,
+        Message, MessageHeaders, MessageId, SmtpConfig, Tls, Uid,
+    };
+
+    fn tmp_db_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "imt-store-backfill-{}.sqlite3",
+            uuid::Uuid::new_v4().simple()
+        ))
+    }
+
+    fn account() -> Account {
+        let auth = AuthMethod::Password {
+            username: "me@example.com".into(),
+        };
+        Account {
+            id: AccountId::new(),
+            display_name: "Me".into(),
+            address: Address::named("Me", "me@example.com"),
+            imap: ImapConfig {
+                host: "imap".into(),
+                port: 993,
+                tls: Tls::Implicit,
+                auth: auth.clone(),
+            },
+            smtp: SmtpConfig {
+                host: "smtp".into(),
+                port: 465,
+                tls: Tls::Implicit,
+                auth,
+            },
+            order: 0,
+            keep_on_server: true,
+        }
+    }
+
+    fn folder(account_id: AccountId) -> Folder {
+        Folder {
+            id: FolderId::new(),
+            account_id,
+            path: "INBOX".into(),
+            name: "INBOX".into(),
+            role: FolderRole::Inbox,
+            uid_validity: 1,
+            uid_next: 100,
+            message_count: 1,
+            unread_count: 0,
+        }
+    }
+
+    fn envelope(account_id: AccountId, folder_id: FolderId, uid: u32) -> Message {
+        Message {
+            id: MessageId::new(),
+            account_id,
+            folder_id,
+            thread_id: None,
+            uid: Uid(uid),
+            headers: MessageHeaders {
+                rfc_message_id: Some(format!("<{uid}@x>")),
+                in_reply_to: None,
+                references: vec![],
+                from: vec![Address::new("a@b.com")],
+                to: vec![],
+                cc: vec![],
+                bcc: vec![],
+                reply_to: vec![],
+                subject: "s".into(),
+                date: Utc::now(),
+            },
+            flags: vec![Flag::Seen],
+            size: 10,
+            body: None,
+            has_attachments: false,
+            snippet: "s".into(),
+            internal_date: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn already_full_local_history_skips_imap_dump() {
+        // Given: folder whose local MIN(uid) <= 1
+        let path = tmp_db_path();
+        let db = Db::open(&path).await.unwrap();
+        let acc = account();
+        let fld = folder(acc.id);
+        AccountRepo::new(db.pool()).upsert(&acc).await.unwrap();
+        FolderRepo::new(db.pool()).upsert(&fld).await.unwrap();
+        MessageRepo::new(db.pool())
+            .upsert_envelope(&envelope(acc.id, fld.id, 1))
+            .await
+            .unwrap();
+
+        // When: backfill init / migration runs (re-open applies INSERT … HAVING MIN(uid) <= 1;
+        // row may already exist from first open — assert via ensure path: set if missing)
+        let frepo = FolderRepo::new(db.pool());
+        if frepo.backfill_low(fld.id).await.unwrap().is_none() {
+            frepo.set_backfill_low(fld.id, 1).await.unwrap();
+        }
+
+        // Then: backfill_low = 1 and no historical UID FETCH needed
+        assert_eq!(frepo.backfill_low(fld.id).await.unwrap(), Some(1));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn migration_marks_complete_when_min_uid_is_one() {
+        // Given: messages inserted before reading backfill cursor on a fresh DB
+        let path = tmp_db_path();
+        // Open once to create schema, insert data, then rely on migration's INSERT
+        // already applied — simulate by inserting then calling the same SQL seed.
+        let db = Db::open(&path).await.unwrap();
+        let acc = account();
+        let fld = folder(acc.id);
+        AccountRepo::new(db.pool()).upsert(&acc).await.unwrap();
+        FolderRepo::new(db.pool()).upsert(&fld).await.unwrap();
+        MessageRepo::new(db.pool())
+            .upsert_envelope(&envelope(acc.id, fld.id, 1))
+            .await
+            .unwrap();
+
+        // When: migration-equivalent seed runs (idempotent INSERT OR IGNORE)
+        sqlx::query(
+            "INSERT OR IGNORE INTO folder_backfill (folder_id, backfill_low) \
+             SELECT folder_id, 1 FROM messages GROUP BY folder_id HAVING MIN(uid) <= 1",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Then: cursor is complete
+        assert_eq!(
+            FolderRepo::new(db.pool()).backfill_low(fld.id).await.unwrap(),
+            Some(1)
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+}
+

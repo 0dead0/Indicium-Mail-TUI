@@ -2,6 +2,7 @@
 //! emitting `SyncEvent`s for the TUI to consume.
 
 pub mod account_task;
+pub mod backfill;
 pub mod engine;
 pub mod error;
 pub mod password;

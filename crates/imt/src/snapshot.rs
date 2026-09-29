@@ -163,20 +163,34 @@ impl Snapshot {
                     }
                 });
             }
-            SyncEvent::MessageAdded { folder_id, message_id } => {
+            SyncEvent::MessageAdded {
+                folder_id,
+                message_id,
+                notify,
+            } => {
                 let msgs = MessageRepo::new(pool).list_by_folder(*folder_id, 500, 0).await?;
-                // Notify if this is an inbox folder and the message is new (not Seen).
-                if let Some(msg) = msgs.iter().find(|m| m.id == *message_id) {
-                    let is_inbox = self.read(|s| {
-                        s.folders_by_account.values().any(|fs| {
-                            fs.iter().any(|f| f.id == *folder_id && f.role == imt_core::FolderRole::Inbox)
-                        })
-                    });
-                    if is_inbox && !msg.flags.contains(&imt_core::Flag::Seen) {
-                        let from = msg.headers.from.first()
-                            .map(|a| a.format())
-                            .unwrap_or_else(|| "Unknown".into());
-                        self.push_notification(format!("New mail from {}:\n{}", from, msg.headers.subject));
+                // Toast only for live/incremental adds (notify=true), not backfill history.
+                if *notify {
+                    if let Some(msg) = msgs.iter().find(|m| m.id == *message_id) {
+                        let is_inbox = self.read(|s| {
+                            s.folders_by_account.values().any(|fs| {
+                                fs.iter().any(|f| {
+                                    f.id == *folder_id && f.role == imt_core::FolderRole::Inbox
+                                })
+                            })
+                        });
+                        if is_inbox && !msg.flags.contains(&imt_core::Flag::Seen) {
+                            let from = msg
+                                .headers
+                                .from
+                                .first()
+                                .map(|a| a.format())
+                                .unwrap_or_else(|| "Unknown".into());
+                            self.push_notification(format!(
+                                "New mail from {}:\n{}",
+                                from, msg.headers.subject
+                            ));
+                        }
                     }
                 }
                 self.write(|s| {

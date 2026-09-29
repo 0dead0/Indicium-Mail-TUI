@@ -139,6 +139,17 @@ impl<'a> MessageRepo<'a> {
         row_to_message(&row)
     }
 
+    /// Lowest stored UID in a folder, if any messages exist.
+    pub async fn min_uid(&self, folder_id: FolderId) -> Result<Option<u32>> {
+        let folder_bytes = uuid_bytes(&folder_id.0);
+        let row = sqlx::query("SELECT MIN(uid) AS min_uid FROM messages WHERE folder_id = ?1")
+            .bind(&folder_bytes)
+            .fetch_one(self.0)
+            .await?;
+        let v: Option<i64> = row.try_get("min_uid")?;
+        Ok(v.map(|u| u as u32))
+    }
+
     /// List messages in a folder, newest first, paged.
     pub async fn list_by_folder(
         &self,
